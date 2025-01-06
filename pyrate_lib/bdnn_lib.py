@@ -4024,8 +4024,8 @@ def get_pdp_rate_free_combination(bdnn_obj,
 
 def get_pdrtt_i(arg):
     [num_bins, num_taxa, trait_tbl_sp, trait_tbl_ex, names_comb_idx_conc, w_sp_i, w_ex_i,
-     hidden_act_f, out_act_f, apply_reg, bias_node_idx, fix_edgeShift,
-     t_reg_lam_i, t_reg_mu_i, reg_denom_lam_i, reg_denom_mu_i,
+     hidden_act_f, out_act_f, t_reg_lam_i, t_reg_mu_i, reg_denom_lam_i, reg_denom_mu_i,
+
      weights_dur, dur_bins] = arg
     pdsp = np.zeros((num_taxa, num_bins))
     pdex = np.zeros((num_taxa, num_bins))
@@ -4038,20 +4038,14 @@ def get_pdrtt_i(arg):
             trait_tbl_exk[:, :, names_comb_idx_conc] = trait_tbl_exk[j, k, names_comb_idx_conc]
             
             # Get PDP rates
-            nn_sp = init_NN_output(trait_tbl_spk, w_sp_i)
-            rate_BDNN, _ = get_unreg_rate_BDNN_3D(trait_tbl_spk, w_sp_i, nn_sp,
-                                                  hidden_act_f, out_act_f,
-                                                  apply_reg=apply_reg, bias_node_idx=bias_node_idx, fix_edgeShift=fix_edgeShift)
+            rate_BDNN = get_unreg_rate_BDNN_3D(trait_tbl_spk, w_sp_i, hidden_act_f, out_act_f)
             rate_BDNN = rate_BDNN ** t_reg_lam_i / reg_denom_lam_i
 #            pdsp[k, j] = 1.0 / np.mean(1.0 / rate_BDNN) # harmonic mean
             pdsp[k, j] = weights_dur / np.sum(dur_bins / rate_BDNN) # weighted harmonic mean
-            nn_ex = init_NN_output(trait_tbl_exk, w_ex_i)
-            rate_BDNN, _ = get_unreg_rate_BDNN_3D(trait_tbl_exk, w_ex_i, nn_ex,
-                                                  hidden_act_f, out_act_f,
-                                                  apply_reg=apply_reg, bias_node_idx=bias_node_idx, fix_edgeShift=fix_edgeShift)
-            rate_BDNN = rate_BDNN ** t_reg_mu_i / reg_denom_mu_i
-#            pdex[k, j] = 1.0 / np.mean(1.0 / rate_BDNN) # harmonic mean
-            pdex[k, j] = weights_dur / np.sum(dur_bins / rate_BDNN) # weighted harmonic mean
+            rate_BDNN = get_unreg_rate_BDNN_3D(trait_tbl_exk, w_ex_i, hidden_act_f, out_act_f)
+            rate_BDNN = rate_BDNN ** t_reg_mu_i / reg_denom_mu_i # harmonic mean
+#            pdex[k, j] = 1.0 / np.mean(1.0 / rate_BDNN) # weighted harmonic mean
+            pdex[k, j] = weights_dur / np.sum(dur_bins / rate_BDNN)
     return np.hstack((pdsp, pdex))
 
 
@@ -4067,7 +4061,6 @@ def get_PDRTT(f, names_comb, burn, thin, groups_path='', translate=0.0, num_proc
     bdnn_obj, w_sp, w_ex, _, sp_fad_lad, ts, te, t_reg_lam, t_reg_mu, _, reg_denom_lam, reg_denom_mu, _, _, _ = bdnn_parse_results(mcmc_file, pkl_file, burn, thin)
     out_act_f = bdnn_obj.bdnn_settings["out_act_f"]
     hidden_act_f = bdnn_obj.bdnn_settings["hidden_act_f"]
-    apply_reg, bias_node_idx, fix_edgeShift, _ = get_edgeShifts_obj(bdnn_obj)
     num_it = ts.shape[0]
     
     trait_tbl_sp = get_trt_tbl(bdnn_obj, rate_type="speciation")
@@ -4109,8 +4102,7 @@ def get_PDRTT(f, names_comb, burn, thin, groups_path='', translate=0.0, num_proc
     args = []
     for i in range(num_it):
         a = [num_bins, num_taxa, trait_tbl_sp, trait_tbl_ex, names_comb_idx_conc, w_sp[i], w_ex[i],
-             hidden_act_f, out_act_f, apply_reg, bias_node_idx, fix_edgeShift,
-             t_reg_lam[i], t_reg_mu[i], reg_denom_lam[i], reg_denom_mu[i],
+             hidden_act_f, out_act_f, t_reg_lam[i], t_reg_mu[i], reg_denom_lam[i], reg_denom_mu[i],
              weights_duration, duration_bins]
         args.append(a)
     unixos = is_unix()
