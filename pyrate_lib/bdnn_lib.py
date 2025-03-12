@@ -27,6 +27,7 @@ from PyRate import load_pkl
 from PyRate import write_pkl
 from PyRate import get_rate_BDNN
 from PyRate import get_DT
+from PyRate import get_diversity
 from PyRate import get_binned_div_traj
 from PyRate import get_sp_in_frame_br_length
 from PyRate import bdnn
@@ -593,7 +594,7 @@ def overwrite_xlim(xlim, min_age, max_age):
 
 
 def plot_bdnn_rtt_groups(path_dir_log_files, groups_path, burn,
-                         translate=0.0, min_age=0, max_age=0,
+                         translate=0.0, min_age=0, max_age=0, bdnn_precision=0,
                          remove_qshifts=False, remove_alpha=False, mask_features=[]):
                          # remove_qshifts=True, remove_alpha=True, mask_features=[18, 14, 17, 15, 16, 0,1,2,3,4,5,6,7,8,9,10,11,12,13]
     """Make RTT plots for the groups of species defined in the tab-delimited group_path file"""
@@ -617,6 +618,7 @@ def plot_bdnn_rtt_groups(path_dir_log_files, groups_path, burn,
     group_names = group_file.columns.tolist()
     group_species_idx = []
     group_names, group_species_idx = get_species_in_groups(group_names, group_file, group_species_idx, species_names)
+    float_prec_f = get_float_prec_f_from_bdnn_obj(bdnn_obj, bdnn_precision)
 
     if do_diversification:
         apply_reg, bias_node_idx, fix_edgeShift, _, = get_edgeShifts_obj(bdnn_obj)
@@ -638,12 +640,11 @@ def plot_bdnn_rtt_groups(path_dir_log_files, groups_path, burn,
         # Get speciation and extinction rates (the same as we obtained them during the BDNN inference)
         for i in range(num_it):
             if bdnn_dd:
-                bdnn_time_div = np.arange(np.maximum(np.max(ts[i, :]), np.max(times_of_shift)), 0.0, -0.001)
-                bdnn_div = get_DT(bdnn_time_div, ts[i, :], te[i, :])
-                bdnn_binned_div = get_binned_div_traj(times_of_shift, bdnn_time_div, bdnn_div)[:-1] / bdnn_rescale_div
-                bdnn_binned_div = np.repeat(bdnn_binned_div, n_taxa).reshape((len(bdnn_binned_div), n_taxa))
+                M = [np.maximum(np.max(ts[i, :]), np.max(times_of_shift))]
+                bdnn_binned_div = get_diversity(ts[i, :], te[i, :], M, times_of_shift, bdnn_rescale_div, n_taxa)
                 trait_tbl[0][:, :, div_idx_trt_tbl] = bdnn_binned_div
                 trait_tbl[1][:, :, div_idx_trt_tbl] = bdnn_binned_div
+            trait_tbl = set_trt_tbl_prec(trait_tbl, float_prec_f)
             lam = get_rate_BDNN_3D_noreg(trait_tbl[0], w_sp[i], hidden_act_f, out_act_f,
                                          apply_reg, bias_node_idx, fix_edgeShift)
             lam_it[i, :, :] = lam ** t_reg_lam[i] / reg_denom_lam[i]
@@ -1177,6 +1178,11 @@ def is_time_variable_feature(trait_tbl):
 
 def get_idx_feature_without_variance(trt_tbl, bins_within_edges=None):
     if trt_tbl.ndim == 3:
+#        print('trt_tbl', trt_tbl[:, 0, -3])
+#        print('trt_tbl', trt_tbl[:, 0, -3].shape)
+#        print('bins_within_edges\n', bins_within_edges.shape)
+#        print('bins_within_edges\n', bins_within_edges[0, :])
+        
         trt_tbl = trim_trait_tbl_by_edges(trt_tbl, bins_within_edges)
         sd_species = np.std(trt_tbl[0,:,:], axis = 0)
         sd_time = np.zeros(trt_tbl.shape[2])
@@ -1674,7 +1680,7 @@ def build_conditional_trait_tbl(bdnn_obj,
     if "diversity" in names_features:
         div_time, div_traj = get_mean_div_traj(ts_post, te_post)
         bdnn_time = get_bdnn_time(bdnn_obj, ts_post, fix_edge_shift)
-        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)[:-1]
+        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)
         div_traj_binned = div_traj_binned / bdnn_obj.bdnn_settings["div_rescaler"]
         div_traj_binned = np.repeat(div_traj_binned, trait_tbl.shape[1]).reshape((trait_tbl.shape[0], trait_tbl.shape[1]))
         div_traj_binned[np.isnan(div_traj_binned)] = 0.0
@@ -1708,6 +1714,8 @@ def build_conditional_trait_tbl(bdnn_obj,
     if trait_tbl.ndim == 3:
         # In case of combined replicates where the times can differ among replicates we need to order from present to past.
         trait_tbl = trait_tbl[::-1, :, :]
+        if isinstance(bins_within_edges, np.ndarray):
+            bins_within_edges = bins_within_edges[:, ::-1]
     
     if np.any(feature_is_time_variable) and rate_type != 'sampling':
         fossil_bin_ts = get_bin_from_fossil_age(bdnn_obj, tste, 'speciation', reverse_time=True)
@@ -1858,8 +1866,13 @@ def plot_bdnn_discr(rs, r, tr, r_script, names, names_states, rate_type):
     rate_min = np.nanmin(rs[:, 1])
     rate_max += 0.2 * rate_max
     rate_min -= 0.2 * np.abs(rate_min)
+    rotate_labels = np.sum(np.char.str_len(np.array(names_states).astype(str))) > 50
     r_script += "\nylim = c(%s, %s)" % (rate_min, rate_max)
     r_script += "\nxlim = c(-0.5, %s + 0.5)" % (n_states - 1)
+    if rotate_labels:
+        r_script += "\npar(las = 2, mar = c(9, 4, 1.5, 0.5))"
+#        r_script += "\nplot(0, 0, type = 'n', xlim = xlim, ylim = ylim, xlab = '', ylab = '%s', xaxt = 'n')" % (rate_type)
+#    else:
     r_script += "\nplot(1, 0, type = 'n', xlim = xlim, ylim = ylim, xlab = '', ylab = '%s', xaxt = 'n')" % rate_type
     match rate_type:
         case "speciation":
@@ -1879,6 +1892,8 @@ def plot_bdnn_discr(rs, r, tr, r_script, names, names_states, rate_type):
         r_script += "\nlines(rep(%s, 2), c(%s, %s), lwd = 1.5)" % (i, rs[i, 1], rs[i, 2])
         r_script += "\npoints(%s, %s, pch = 19)" % (i, rs[i, 0])
     r_script += "\ntitle(main = '%s')" % names
+    if rotate_labels:
+        r_script += "\npar(las = 1, mar = c(4, 4, 1.5, 0.5))"
     return r_script
 
 
@@ -4191,7 +4206,7 @@ def get_pdp_rate_free_combination(bdnn_obj,
     if "diversity" in names_features:
         div_time, div_traj = get_mean_div_traj(ts_post, te_post)
         bdnn_time = get_bdnn_time(bdnn_obj, ts_post, fix_edgeShift)
-        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)[:-1]
+        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)
         div_traj_binned = div_traj_binned / bdnn_obj.bdnn_settings["div_rescaler"]
         div_traj_binned = np.repeat(div_traj_binned, trait_tbl.shape[1]).reshape((trait_tbl.shape[0], trait_tbl.shape[1]))
         div_idx_trt_tbl = -1
@@ -4799,14 +4814,14 @@ def perm_mcmc_sample_i(args):
     
     if bdnn_dd:
         n_taxa = trt_tbls[0].shape[1]
-        bdnn_time_div = np.arange(np.maximum(np.max(ts[i, :]), np.max(bdnn_time)), 0.0, -0.001)
+        bdnn_time_div = np.arange(np.maximum(np.max(ts[i, :]), np.max(bdnn_time)), 0.0, -0.01)
         bdnn_div = get_DT(bdnn_time_div, ts[i, :], te[i, :])
-        bdnn_binned_div_highres = get_binned_div_traj(bdnn_time_highres, bdnn_time_div, bdnn_div)[:-1] / div_rescaler
+        bdnn_binned_div_highres = get_binned_div_traj(bdnn_time_highres, bdnn_time_div, bdnn_div) / div_rescaler
         bdnn_binned_div_highres = np.repeat(bdnn_binned_div_highres, n_taxa).reshape((len(bdnn_binned_div_highres), n_taxa))
         bdnn_binned_div_highres = float_prec_f(bdnn_binned_div_highres)
         trt_tbls_highres[0][:, :, div_idx_trt_tbl] = bdnn_binned_div_highres
         trt_tbls_highres[1][:, :, div_idx_trt_tbl] = bdnn_binned_div_highres
-        bdnn_binned_div = get_binned_div_traj(bdnn_time, bdnn_time_div, bdnn_div)[:-1] / div_rescaler
+        bdnn_binned_div = get_binned_div_traj(bdnn_time, bdnn_time_div, bdnn_div) / div_rescaler
         bdnn_binned_div = np.repeat(bdnn_binned_div, n_taxa).reshape((len(bdnn_binned_div), n_taxa))
         bdnn_binned_div = float_prec_f(bdnn_binned_div)
         trt_tbls[0][:, :, div_idx_trt_tbl] = bdnn_binned_div
@@ -4907,10 +4922,25 @@ def get_idx_maineffect(m, p, k, old_idx):
     return out
 
 
+def avoid_dropping_inv_ohe_feat(idx_comb_feat, features_without_variance):
+    """Avoid dropping an entire one-hot encoded feature if a single state of it is invariant"""
+    num_feat_groups = len(idx_comb_feat)
+    num_features_without_variance = len(features_without_variance)
+    if num_feat_groups > 0 and num_features_without_variance > 0:
+        for i in range(num_feat_groups):
+            features_without_variance_in_group = np.isin(idx_comb_feat[i], features_without_variance)
+            any_but_not_all = np.any(features_without_variance_in_group) and ~np.all(features_without_variance_in_group)
+            if any_but_not_all:
+                omit_idx = np.isin(features_without_variance, idx_comb_feat[i])
+                features_without_variance = np.delete(features_without_variance, omit_idx)
+    return features_without_variance
+
+
 def remove_invariant_feature_from_featperm_results(bdnn_obj, res, trt_tbl, combine_discr_features = "", rate_type='speciation'):
     features_without_variance = get_idx_feature_without_variance(trt_tbl)
     names_features = get_names_features(bdnn_obj, rate_type=rate_type)
     idx_comb_feat = get_idx_comb_feat(names_features, combine_discr_features)
+    features_without_variance = avoid_dropping_inv_ohe_feat(idx_comb_feat, features_without_variance)
     if idx_comb_feat:
         names_features = replace_names_by_feature_group(names_features, idx_comb_feat, combine_discr_features)
     for i in features_without_variance:
@@ -6338,14 +6368,11 @@ def k_add_kernel_shap_i(arg):
      bdnn_dd, div_rescaler, div_idx_trt_tbl,
      idx_comb_feat_sp, idx_comb_feat_ex,
      do_inter_imp, use_mean, use_taxa_sp, use_taxa_ex] = arg
-#    bdnn_time = get_bdnn_time(bdnn_obj, post_ts_i)
     if bdnn_dd:
         n_taxa = trt_tbls[0].shape[1]
-        bdnn_time_div = np.arange(np.maximum(np.max(post_ts_i), np.max(bdnn_time)), 0.0, -0.001)
-        bdnn_div = get_DT(bdnn_time_div, post_ts_i, post_te_i)
-        bdnn_div = float_prec_f(bdnn_div)
-        bdnn_binned_div = get_binned_div_traj(bdnn_time, bdnn_time_div, bdnn_div)[:-1] / div_rescaler
-        bdnn_binned_div = np.repeat(bdnn_binned_div, n_taxa).reshape((len(bdnn_binned_div), n_taxa))
+        M = [np.maximum(np.max(post_ts_i), np.max(bdnn_time))]
+        bdnn_binned_div = get_diversity(post_ts_i, post_te_i, M, bdnn_time, div_rescaler, n_taxa)
+        bdnn_binned_div = float_prec_f(bdnn_binned_div)
         trt_tbls[0][:, :, div_idx_trt_tbl] = bdnn_binned_div
         trt_tbls[1][:, :, div_idx_trt_tbl] = bdnn_binned_div
     shap_trt_tbl_sp = get_shap_trt_tbl(post_ts_i, bdnn_time, trt_tbls[0], float_prec_f)
@@ -6502,7 +6529,7 @@ def k_add_kernel_shap(mcmc_file, pkl_file, burnin, thin, combine_discr_features=
         div_rescaler = bdnn_obj.bdnn_settings['div_rescaler']
     div_idx_trt_tbl = -1
     if is_time_trait(bdnn_obj) and bdnn_dd:
-            div_idx_trt_tbl = -2
+        div_idx_trt_tbl = -2
     hidden_act_f = bdnn_obj.bdnn_settings['hidden_act_f']
     out_act_f = bdnn_obj.bdnn_settings['out_act_f']
     _, bias_node_idx, fix_edgeShift, edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate)
@@ -6565,8 +6592,11 @@ def k_add_kernel_shap(mcmc_file, pkl_file, burnin, thin, combine_discr_features=
     if bdnn_dd:
         trt_tbls[0][0, :, div_idx_trt_tbl] = 1.0
         trt_tbls[1][0, :, div_idx_trt_tbl] = 1.0
+
     feature_without_variance_sp = get_idx_feature_without_variance(trt_tbls[0])
     feature_without_variance_ex = get_idx_feature_without_variance(trt_tbls[1])
+    feature_without_variance_sp = avoid_dropping_inv_ohe_feat(idx_comb_feat_sp, feature_without_variance_sp)
+    feature_without_variance_ex = avoid_dropping_inv_ohe_feat(idx_comb_feat_ex, feature_without_variance_ex)
     remove_sp = []
     for i in feature_without_variance_sp:
         remove_sp.append(np.where(shap_names_sp[:, 0] == names_features_sp[i])[0])
@@ -6577,6 +6607,7 @@ def k_add_kernel_shap(mcmc_file, pkl_file, burnin, thin, combine_discr_features=
         remove_ex.append(np.where(shap_names_ex[:, 1] == names_features_ex[i])[0])
     remove_sp = np.array(list(pd.core.common.flatten(remove_sp))).astype(int)
     remove_ex = np.array(list(pd.core.common.flatten(remove_ex))).astype(int)
+
     mean_shap_sp = np.delete(mean_shap_sp, remove_sp[remove_sp < len(mean_shap_sp)], axis = 0)
     mean_shap_ex = np.delete(mean_shap_ex, remove_ex[remove_ex < len(mean_shap_ex)], axis = 0)
     shap_names_sp_del = np.delete(shap_names_sp, remove_sp, axis = 0)
@@ -7239,7 +7270,7 @@ def get_features_for_shap_plot(mcmc_file, pkl_file, burnin, thin, rate_type, com
     if "diversity" in names_features and rate_type != 'sampling':
         div_time, div_traj = get_mean_div_traj(ts_post, te_post)
         bdnn_time = get_bdnn_time(bdnn_obj, ts_post, fix_edgeShift)
-        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)[:-1]
+        div_traj_binned = get_binned_div_traj(bdnn_time, div_time, div_traj)
         div_traj_binned = np.repeat(div_traj_binned, trait_tbl.shape[1]).reshape((trait_tbl.shape[0], trait_tbl.shape[1]))
         div_idx_trt_tbl = -1
         if is_time_trait(bdnn_obj):
