@@ -1300,7 +1300,9 @@ def update_parameter_normal_vec(oldL,d,f=.25, float_prec_f=np.float64):
     ff = np.random.binomial(1,np.min([f, 1]),S)
     # avoid no update being performed at all
     if np.sum(ff) == 0:
-        ff[np.random.randint(S, size=1)] = 1
+        up = np.random.randint(oldL.size, size=1)
+        row, col = np.unravel_index(up, ff.shape)
+        ff[row, col] = 1
     # print(np.sum(ff), S, f)
     s= oldL + float_prec_f(ii*ff)
     return s
@@ -4196,7 +4198,8 @@ def MCMC(all_arg):
 
 
 
-    d1_ts, d1_te, tste_tune_obj = make_tste_tune_obj(LO, bound_te, d1)
+    if fix_SE == 0:
+        d1_ts, d1_te, tste_tune_obj = make_tste_tune_obj(LO, bound_te, d1)
 
     # start threads
     if num_processes>0: pool_lik = multiprocessing.Pool(num_processes) # likelihood
