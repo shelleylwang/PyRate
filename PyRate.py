@@ -2871,7 +2871,8 @@ def HPP_NN_lik(arg):
         # Get relative weight of the gamma categories
         lik_vec_exp = np.exp(lik_vec2)
         weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
-        q_rates = np.sum(q_rates * weight_per_taxon[:, :, np.newaxis], axis=0)
+        # Weighted harmonic mean
+        q_rates = np.sum(weight_per_taxon[:, :, np.newaxis], axis=0) / np.sum((1 / q_rates) * weight_per_taxon[:, :, np.newaxis], axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -2897,7 +2898,8 @@ def HOMPP_NN_lik(arg):
         lik = np.log(np.sum(np.exp(lik_vec2), axis=0) / gamma_ncat) + lik_max
         lik_vec_exp = np.exp(lik_vec)
         weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
-        q_rates = np.sum(q_rates * weight_per_taxon, axis=0)
+        # Weighted harmonic mean
+        q_rates = np.sum(weight_per_taxon, axis=0) / np.sum((1 / q_rates) * weight_per_taxon, axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -2981,6 +2983,16 @@ def get_diversity(ts, te, timesLA, time_vec, bdnn_rescale_div, n_taxa, step_size
     bdnn_binned_div = get_binned_div_traj(time_vec, bdnn_time_div, bdnn_div).reshape(-1) / bdnn_rescale_div
     bdnn_binned_div = np.repeat(bdnn_binned_div, n_taxa).reshape((len(bdnn_binned_div), n_taxa))
     return bdnn_binned_div
+
+
+def write_taxon_time_q(file_name, q_rates):
+    newshape = (1, ) + q_rates.shape
+    q = np.float16(q_rates.reshape(newshape))
+    try:
+        data = np.load(file_name)['arr_0']
+        np.savez_compressed(file_name, np.vstack((data, q)))
+    except:
+        np.savez_compressed(file_name, q)
 
 
 # ADE model
@@ -5537,6 +5549,8 @@ def MCMC(all_arg):
                         w_marg_ex.writerow(list(MA) + list(timesMA[1:len(timesMA)-1]))
                         marginal_ex_rate_file.flush()
                         os.fsync(marginal_ex_rate_file)
+                    # log taxon-time specific q-rates
+                    write_taxon_time_q(taxon_time_specific_q_name, bdnn_q_ratesA)
                 
                 if log_per_species_rates and BDNNmodel in [1, 3]:
                     # get time-trait dependent rate at ts (speciation) and te (extinction) | (only works with bdnn_const_baseline)
@@ -5625,7 +5639,7 @@ if __name__ == '__main__':
     p.add_argument('input_data', metavar='<input file>', type=str,help='Input python file - see template',default=[],nargs='*')
     p.add_argument('-j',         type=int, help='number of data set in input file', default=1, metavar=1)
     p.add_argument('-trait',     type=int, help='number of trait for Cov model', default=1, metavar=1)
-    p.add_argument('-logT',      type=int, help='Transform trait (or rates for -plotRJ): 0) False, 1) Ln(x), 2) Log10(x)', default=0, metavar=0)
+    p.add_argument('-logT',      type=int, help='Transform trait (or rates for -plotRJ, -plotQ, and -plotBDNN): 0) False, 1) Ln(x), 2) Log10(x)', default=0, metavar=0)
     p.add_argument("-N",         type=int, help='number of exant species', default=-1)
     p.add_argument("-wd",        type=str, help='path to working directory', default="")
     p.add_argument("-out",       type=str, help='output tag', default="")
@@ -5757,7 +5771,7 @@ if __name__ == '__main__':
     p.add_argument('-BDNNmodel', type=int, help='use neural network model for 1) speciation & extinction, 2) sampling, 3) speciation & extinction & sampling', default=0, metavar=0)
     p.add_argument('-BDNNnodes', type=int, help='number of BD-NN nodes', nargs='+',default=[16, 8])
     p.add_argument('-BDNNfadlad', type=float, help='if > 0 include FAD LAD as traits (rescaled i.e. FAD * BDNNfadlad)', default=0, metavar=0)
-    p.add_argument('-BDNNtimetrait', type=float, help='if > 0 use (rescaled) time as a trait (only with -fixShift option). if = -1 auto-rescaled', default= -1, metavar= -1)
+    p.add_argument('-BDNNtimetrait', type=float, help='if > 0 use (rescaled) time as a trait. If = -1 auto-rescaled; 0 no time as feature', default=-1, metavar=-1)
     p.add_argument('-BDNNtimeres', type=float, help='Time resolution for the BDNN model. Is overridden by -fixShift argument.', default=1, metavar=1)
     p.add_argument('-BDNNconstbaseline', type=int, help='constant baseline rates (only with -fixShift option AND time as a trait)', default=1, metavar=1)
     p.add_argument('-BDNNoutputfun', type=int, help='Activation function output layer: 0) abs, 1) softPlus, 2) exp, 3) relu 4) sigmoid 5) sigmoid_rate', default=1, metavar=1)
@@ -6149,21 +6163,24 @@ if __name__ == '__main__':
                 rtt_plot_bds = rtt_plot_bds.plot_marginal_rates(path_dir_log_files,name_tag=file_stem,bin_size=grid_plot,
                         burnin=burnin,min_age=args.min_age_plot,max_age=root_plot,logT=args.logT,n_reps=args.n_prior,min_allowed_t=min_allowed_t)
             elif plot_type== 5:
-                rtt_plot_bds = rtt_plot_bds.RTTplot_Q(path_dir_log_files,args.qShift,burnin=burnin,max_age=root_plot)
+                rtt_plot_bds = rtt_plot_bds.RTTplot_Q(path_dir_log_files,args.qShift,burnin=burnin, logT=args.logT,
+                                                      translate=args.translate, min_age=args.min_age_plot, max_age=root_plot)
             elif plot_type== 6:
                 import pyrate_lib.bdnn_lib as bdnn_lib
                 bdnn_lib.plot_rtt(path_dir_log_files, burn=burnin, thin=args.resample, translate=args.translate,
-                                  min_age=args.min_age_plot, max_age=root_plot, bdnn_precision=args.BDNNprecision)
+                                  min_age=args.min_age_plot, max_age=root_plot, bdnn_precision=args.BDNNprecision,
+                                  q_shift_file=args.qShift, logT=args.logT)
                 if args.plotBDNN_groups != "":
                     bdnn_lib.plot_bdnn_rtt_groups(path_dir_log_files, args.plotBDNN_groups, burn=burnin,
-                                                  translate=args.translate, min_age=args.min_age_plot, max_age=root_plot, bdnn_precision=args.BDNNprecision)
+                                                  translate=args.translate, min_age=args.min_age_plot, max_age=root_plot,
+                                                  bdnn_precision=args.BDNNprecision, logT=args.logT)
             elif plot_type== 7:
                 import pyrate_lib.bdnn_lib as bdnn_lib
                 bdnn_lib.get_PDRTT(path_dir_log_files, args.BDNN_groups,
                                    burn=burnin, thin=args.resample,
                                    groups_path=args.plotBDNN_groups,
                                    translate=args.translate, min_age=args.min_age_plot, max_age=root_plot,
-                                   bdnn_precision=args.BDNNprecision, num_processes=args.thread[0], show_progressbar=True)
+                                   bdnn_precision=args.BDNNprecision, logT=args.logT, num_processes=args.thread[0], show_progressbar=True)
 
         elif plot_type == 8:
             import pyrate_lib.bdnn_lib as bdnn_lib
@@ -7767,6 +7784,12 @@ if __name__ == '__main__':
                 w_marg_q = csv.writer(marginal_q_rate_file, delimiter='\t')
                 marginal_q_rate_file.flush()
                 os.fsync(marginal_q_rate_file)
+                # log taxon-time specific q-rates
+                taxon_time_specific_q_name = "%s/%s_taxon_time_q_rates.npz" % (path_dir, suff_out)
+                try:
+                    os.remove(taxon_time_specific_q_name)
+                except:
+                    pass
             marginal_frames=0
             if BDNNmodel:
                 fixed_times_of_shift_bdnn_logger = fixed_times_of_shift_bdnn
