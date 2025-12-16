@@ -88,7 +88,7 @@ def load_trait_tbl(path, rate_type="diversification"):
     if len(sp_pred_names_tbls) > 1:
         for t in sp_pred_names_tbls:
             print(os.path.basename(t))
-            sp_tbl = np.loadtxt(t, skiprows=1)
+            sp_tbl = np.loadtxt(t, skiprows=1, ndmin=2)
             sp_pred_tbls.append(sp_tbl)
         sp_pred_tbls = np.array(sp_pred_tbls)
     else:
@@ -108,7 +108,7 @@ def load_trait_tbl(path, rate_type="diversification"):
         if len(ex_pred_names_tbls) > 1:
             for t in ex_pred_names_tbls:
                 print(os.path.basename(t))
-                ex_tbl = np.loadtxt(t, skiprows=1)
+                ex_tbl = np.loadtxt(t, skiprows=1, ndmin=2)
                 ex_pred_tbls.append(ex_tbl)
             ex_pred_tbls = np.array(ex_pred_tbls)
         else:
@@ -1511,54 +1511,60 @@ def get_fixed_ts_te(num_iter, pkl_file, burn=0.0, thin=0.0):
     return ts, te
 
 
-def get_edgeShifts_obj(bdnn_obj, min_age=0, max_age=0, translate=0):
-    if not 'apply_reg' in bdnn_obj.bdnn_settings.keys():
-        # capture the case when older BDNN runs do not have the needed objects
+def get_edgeShifts_obj(bdnn_obj, min_age=0, max_age=0, translate=0, rate_type='speciation'):
+    if rate_type == 'sampling':
         apply_reg = True
         bias_node_idx = [0]
         fix_edgeShift = 0
         edgeShifts = np.array([])
     else:
-        apply_reg = bdnn_obj.bdnn_settings['apply_reg']
-        bias_node_idx = bdnn_obj.bdnn_settings['bias_node_idx']
-        fix_edgeShift = bdnn_obj.bdnn_settings['fix_edgeShift']
-        edgeShifts = bdnn_obj.bdnn_settings['edgeShifts']
-
-    if min_age != 0 or max_age != 0:
-        # custom time slices
-        n_taxa = bdnn_obj.sp_fad_lad.shape[0]
-        bdnn_time = get_bdnn_time(bdnn_obj, np.inf)
-
-        if fix_edgeShift == 0:
-            num_shifts = len(bdnn_time) - 1
-            apply_reg = np.full((n_taxa, num_shifts), True)
+        if not 'apply_reg' in bdnn_obj.bdnn_settings.keys():
+            # capture the case when older BDNN runs do not have the needed objects
+            apply_reg = True
             bias_node_idx = [0]
+            fix_edgeShift = 0
             edgeShifts = np.array([])
+        else:
+            apply_reg = bdnn_obj.bdnn_settings['apply_reg']
+            bias_node_idx = bdnn_obj.bdnn_settings['bias_node_idx']
+            fix_edgeShift = bdnn_obj.bdnn_settings['fix_edgeShift']
+            edgeShifts = bdnn_obj.bdnn_settings['edgeShifts']
 
-        if max_age != 0:
-            max_age += translate
-            if not np.isin(max_age, bdnn_time):
-                sys.exit('-root_plot should equal one of the bin boundaries. Check e.g. -fixShift times')
-            apply_reg[:, bdnn_time[:-1] > max_age] = False
-            if fix_edgeShift in [1, 2]:
-                edgeShifts[0] = max_age
-            else:
-                edgeShifts = np.concatenate((edgeShifts, np.array([max_age])))
-                fix_edgeShift = 2
+        if min_age != 0 or max_age != 0:
+            # custom time slices
+            n_taxa = bdnn_obj.sp_fad_lad.shape[0]
+            bdnn_time = get_bdnn_time(bdnn_obj, np.inf)
 
-        if min_age != 0:
-            min_age += translate
-            if not np.isin(min_age, bdnn_time):
-                sys.exit('-min_age_plot should equal one of the bin boundaries. Check e.g. -fixShift times')
-            apply_reg[:, bdnn_time[1:] < min_age] = False
-            if fix_edgeShift in [1, 3]:
-                edgeShifts[-1] = min_age
-            else:
-                edgeShifts = np.concatenate((edgeShifts, np.array([min_age])))
-                fix_edgeShift = 3
+            if fix_edgeShift == 0:
+                num_shifts = len(bdnn_time) - 1
+                apply_reg = np.full((n_taxa, num_shifts), True)
+                bias_node_idx = [0]
+                edgeShifts = np.array([])
 
-        if len(edgeShifts) > 1:
-            fix_edgeShift = 1
+            if max_age != 0:
+                max_age += translate
+                if not np.isin(max_age, bdnn_time):
+                    sys.exit('-root_plot should equal one of the bin boundaries. Check e.g. -fixShift times')
+                apply_reg[:, bdnn_time[:-1] > max_age] = False
+                if fix_edgeShift in [1, 2]:
+                    edgeShifts[0] = max_age
+                else:
+                    edgeShifts = np.concatenate((edgeShifts, np.array([max_age])))
+                    fix_edgeShift = 2
+
+            if min_age != 0:
+                min_age += translate
+                if not np.isin(min_age, bdnn_time):
+                    sys.exit('-min_age_plot should equal one of the bin boundaries. Check e.g. -fixShift times')
+                apply_reg[:, bdnn_time[1:] < min_age] = False
+                if fix_edgeShift in [1, 3]:
+                    edgeShifts[-1] = min_age
+                else:
+                    edgeShifts = np.concatenate((edgeShifts, np.array([min_age])))
+                    fix_edgeShift = 3
+
+            if len(edgeShifts) > 1:
+                fix_edgeShift = 1
 
     return apply_reg, bias_node_idx, fix_edgeShift, edgeShifts
 
@@ -2266,7 +2272,7 @@ def build_conditional_trait_tbl(bdnn_obj,
                                 translate=0):
     trait_tbl = get_trt_tbl(bdnn_obj, rate_type)
     names_features = get_names_features(bdnn_obj, rate_type=rate_type)
-    bins_within_edges, _, fix_edge_shift, times_edge_shifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate)
+    bins_within_edges, _, fix_edge_shift, times_edge_shifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate, rate_type)
     # diversity-dependence
     if "diversity" in names_features:
         div_time, div_traj = get_mean_div_traj(ts_post, te_post)
@@ -2448,7 +2454,7 @@ def get_observed(bdnn_obj, feature_idx, feature_is_time_variable, fossil_age, fo
     if 'diversity' in names:
         num_taxa = trait_tbl.shape[1]
         div_idx_trt_tbl = np.where(np.char.find('diversity', names) == 0)[0]
-        _, _, fix_edge_shift, _ = get_edgeShifts_obj(bdnn_obj)
+        _, _, fix_edge_shift, _ = get_edgeShifts_obj(bdnn_obj, rate_type=rate_type)
         times_of_shift = get_bdnn_time(bdnn_obj, tste[:, 0], fix_edge_shift)
         div_rescaler = bdnn_obj.bdnn_settings["div_rescaler"]
         M = [np.maximum(np.max(tste), np.max(times_of_shift))]
@@ -2932,7 +2938,7 @@ def create_R_files_effects(cond_trait_tbl, cond_rates, bdnn_obj, tste, r_script,
     rates_summary[not_obs,:] = np.nan
     cond_rates[not_obs,:] = np.nan
     time_idx = np.nanmax(cond_trait_tbl[:, -3]) + 10.0
-    if is_time_trait(bdnn_obj):
+    if is_time_trait(bdnn_obj) and rate_type != 'sampling':
         time_idx = np.max(cond_trait_tbl[:, -6])
     rate_type2 = rate_type
     if rate_type == 'net diversification':
@@ -4695,7 +4701,7 @@ def get_partial_dependence_rates(bdnn_obj, cond_trait_tbl, post_w, post_t_reg, p
     else:
         out_act_f = bdnn_obj.bdnn_settings['out_act_f']
     hidden_act_f = bdnn_obj.bdnn_settings['hidden_act_f']
-    bins_within_edges, bias_node_idx, fix_edgeShift, times_edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate)
+    bins_within_edges, bias_node_idx, fix_edgeShift, times_edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate, rate_type)
     for i in range(num_it):
         trait_tbl_a = trait_tbl + 0.0
         if rate_type == 'sampling':
@@ -4738,10 +4744,13 @@ def match_names_comb_with_features(names_comb, names_features):
     for i in range(len(names_comb)):
         names_comb_i = names_comb[keys_names_comb[i]]
         J = len(names_comb_i)
-        idx = np.zeros(J)
+        idx = np.full(J, np.nan)
         for j in range(J):
-            idx[j] = np.where(names_comb_i[j] == names_features)[0]
-        m.append(idx)
+            w = np.where(names_comb_i[j] == names_features)[0]
+            if len(w) > 0:
+                idx[j] = w
+        if not np.any(np.isnan(idx)):
+            m.append(idx)
     return m
 
 
@@ -4808,7 +4817,7 @@ def get_pdp_rate_free_combination(bdnn_obj,
     float_prec_f = get_float_prec_f_from_bdnn_obj(bdnn_obj, bdnn_precision)
     trait_tbl = set_list_prec(trait_tbl, float_prec_f)
     names_features = get_names_features(bdnn_obj, rate_type=rate_type)
-    bins_within_edges, bias_node_idx, fix_edgeShift, times_edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate)
+    bins_within_edges, bias_node_idx, fix_edgeShift, times_edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate, rate_type)
     # diversity-dependence
     if "diversity" in names_features:
         div_time, div_traj = get_mean_div_traj(ts_post, te_post)
@@ -5281,8 +5290,8 @@ def get_PDRTT(f, names_comb, burn, thin, groups_path='', translate=0.0, min_age=
         LO = np.min(np.mean(te, axis=0))
         for g in range(len(group_names)):
             gs = group_species_idx[g]
-            r_file = "%s_%s_PDQTT.r" % (name_file, group_names[g])
-            pdf_file = "%s_%s_PDQTT.pdf" % (name_file, group_names[g])
+            r_file = "%s_%s_%s_PDQTT.r" % (name_file, group_names[g], keys_names_comb)
+            pdf_file = "%s_%s_%s_PDQTT.pdf" % (name_file, group_names[g], keys_names_comb)
 
             num_q_bins = len(q_bins) - 1
             r_q = np.zeros((num_it, num_q_bins))
