@@ -236,8 +236,8 @@ def combine_pkl(path_to_files, tag, burnin, resample):
             # Check if origination and extinction times were fixed
             direct_mcmc = "%s/*%s*_mcmc.log" % (infile, tag)
             files_mcmc = glob.glob(direct_mcmc)
-            name_combined_mcmc = "%s/combined_%s%s_mcmc.log" % (infile, num_replicates, tag)
-            files_mcmc.remove(name_combined_mcmc)
+            # name_combined_mcmc = "%s/combined_%s%s_mcmc.log" % (infile, num_replicates, tag)
+            # files_mcmc.remove(name_combined_mcmc)
             files_mcmc = np.sort(files_mcmc)
 
             with open(files_mcmc[0], 'r') as f:
