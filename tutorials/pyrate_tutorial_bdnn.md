@@ -205,9 +205,9 @@ Time-series data can be provided in an already binned format. This needs to matc
 
 | Time | Temperature |
 ------:| -----------:|
-0.0 | Mean value from 0.0-1.0 Ma
-1.0 | Mean value from 1.0-2.0 Ma
-2.0 | Mean value from 2.0-3.0 Ma
+0.0 | Mean value from 0.0-0.9999 Ma
+1.0 | Mean value from 1.0-1.9999 Ma
+2.0 | Mean value from 2.0-2.9999 Ma
 
 
 ---
@@ -253,7 +253,8 @@ The marginal speciation and extinction rates through time inferred by the BDNN m
 python ./PyRate.py -plotBDNN ./example_files/BDNN_examples/Carnivora/pyrate_mcmc_logs/Carnivora_occs_1_G_BDS_BDNN_16_8TVc_mcmc.log -b 0.1
 ```
 
-where `-b 0.1` specifies the burnin proportion. This uses the `_sp_rates.log` and `_ex_rates.log` files from the `pyrate_mcmc_logs` directory. The command will generate a PDF file and an R script with the rates-through-time plots, which will be saved in the `pyrate_mcmc_logs` directory. The R script file can be edited to customize the plot.
+where `-b 0.1` specifies the burnin proportion. This uses the `_sp_rates.log` and `_ex_rates.log` files from the `pyrate_mcmc_logs` directory. The command will generate a PDF file and an R script with the rates-through-time plots, which will be saved in the `pyrate_mcmc_logs` directory. Rates can be visualized on a log scale by adding `-logT 2` and truncated with `-root_plot` and `-min_age_plot`. The R script file can be edited to customize the plot.
+
 
 #### Marginal rates through time for a specific group of taxa
 It is possible to plot the rates through time for a subset of the taxa, e.g. for a group of taxa sharing the same trait. The grouping needs to be provided in a tab-separated text file by assigning the taxon names to the group. For instance, the [example grouping](https://github.com/dsilvestro/PyRate/tree/master/example_files/BDNN_examples/Carnivora/Advanced_examples/RTT_groups.csv) specifies the subsets of carnivores that belonging to the families Amphicyonidae, Canidae or Musteloidea, occurring in Eurasia, weighing less than 10 kg, or just for the gluttonous eater (_Borophagus_).

@@ -915,7 +915,6 @@ def comb_mcmc_files(infile, files,burnin,tag,resample,col_tag,file_type="", keep
                 t_file = t_file[temp_values==1,:]
                 print("removed heated chains:",np.shape(t_file))
 
-
             if len(col_tag) == 0 and file_type == "mcmc":
                 q_ind = np.array([i for i in range(len(head)) if head[i].startswith('q_')])
                 if len(q_ind)>0 and not keep_q:
@@ -1009,6 +1008,7 @@ def comb_mcmc_files(infile, files,burnin,tag,resample,col_tag,file_type="", keep
             np.savetxt(f, comb, delimiter="\t",fmt=fmt_list,newline="\r") #)
         else:
             np.savetxt(f, comb, delimiter="\t",fmt=fmt_list,newline="\n") #)
+
 
 def comb_log_files_smart(path_to_files,burnin=0,tag="",resample=0,col_tag=[], keep_q=False):
     infile=path_to_files
@@ -2356,14 +2356,12 @@ def init_trait_and_weights(trait_tbl, time_var_tbl_lambda, time_var_tbl_mu,
             n_features_sp = trait_tbl_lam[0].shape[1]
             n_features_ex = trait_tbl_mu[0].shape[1]
         else:
-            trait_tbl_lam = loaded_tbls[0][::-1,:]
-            trait_tbl_mu = loaded_tbls[1][::-1,:]
             n_features_sp = trait_tbl_lam.shape[1]
             n_features_ex = trait_tbl_mu.shape[1]
         if dd:
             n_taxa = trait_tbl_lam.shape[1]
-            n_bins = trait_tbl_lam.shape[1]
-#            add_zeros = np.zeros(n_taxa * n_bins).reshape((n_bins, n_taxa, 1))
+            n_bins = trait_tbl_lam.shape[0]
+            # Do not with zero because features without variation will be masked
             add_zeros = np.random.random(size=n_taxa * n_bins).reshape((n_bins, n_taxa, 1))
             trait_tbl_lam = np.c_[trait_tbl_lam, add_zeros]
             trait_tbl_mu = np.c_[trait_tbl_mu, add_zeros]
@@ -2425,43 +2423,56 @@ def init_trait_and_weights(trait_tbl, time_var_tbl_lambda, time_var_tbl_mu,
     return [float_prec_f(trait_tbl_lam), float_prec_f(trait_tbl_mu)], [w_lam,w_mu]
 
 
-def init_sampling_trait_and_weights(trait_tbl, time_var_tbl, nodes, bias_node=False,
+def init_sampling_trait_and_weights(trait_tbl, time_var_tbl, ads,
+                                    nodes, bias_node=False,
                                     n_taxa=None,
                                     replicates_tbls=None,
                                     loaded_tbls="",
                                     float_prec_f=np.float64):
-    is_trait_dep = not trait_tbl is None
-    is_env_dep = isinstance(time_var_tbl, np.ndarray)
-    is_age_dep = not replicates_tbls is None
-    n_env_bins = 1
-    n_ads_bins = 1
-    tbl_trt = np.empty((n_taxa, 0))
-    tbl_env = np.empty((n_taxa, 0))
-    tbl_ads = np.empty((n_taxa, 0))
-    
-    if is_env_dep:
-        n_env_bins, n_env_var = time_var_tbl.shape
-        tbl_env = np.repeat(time_var_tbl, repeats=n_taxa, axis=0).reshape((n_env_bins, n_taxa, n_env_var))
-        if not is_age_dep:
-            tbl_ads = np.tile(tbl_ads, (n_env_bins, 1, 0))
-    
-    if is_age_dep:
-        n_ads_bins = len(replicates_tbls)
-        tbl_ads = np.zeros((n_taxa * n_ads_bins, 1)).reshape((n_ads_bins, n_taxa, 1))
-        if not is_env_dep:
-            tbl_env = np.tile(tbl_env, (n_ads_bins, 1, 0))
-    
-    if is_trait_dep:
-        tbl_trt = trait_tbl
-    
-    n_q_bins = np.maximum(n_env_bins, n_ads_bins)
-    if n_q_bins > 1:
-        tbl_trt = np.tile(tbl_trt, (n_q_bins, 1, 1))
-    
-    trait_tbl_q = np.c_[tbl_trt, tbl_env, tbl_ads]
-    
+    if not isinstance(loaded_tbls, np.ndarray):
+        is_trait_dep = not trait_tbl is None
+        is_env_dep = isinstance(time_var_tbl, np.ndarray)
+        is_age_dep = ads > 0
+        n_env_bins = 1
+        n_ads_bins = 1
+        tbl_trt = np.empty((n_taxa, 0))
+        tbl_env = np.empty((n_taxa, 0))
+        tbl_ads = np.empty((n_taxa, 0))
+
+        if is_env_dep:
+            n_env_bins, n_env_var = time_var_tbl.shape
+            tbl_env = np.repeat(time_var_tbl, repeats=n_taxa, axis=0).reshape((n_env_bins, n_taxa, n_env_var))
+            if not is_age_dep:
+                tbl_ads = np.tile(tbl_ads, (n_env_bins, 1, 0))
+
+        if is_age_dep:
+            n_ads_bins = len(replicates_tbls)
+            tbl_ads = np.zeros((n_taxa * n_ads_bins, 1)).reshape((n_ads_bins, n_taxa, 1))
+            if not is_env_dep:
+                tbl_env = np.tile(tbl_env, (n_ads_bins, 1, 0))
+
+        if is_trait_dep:
+            tbl_trt = trait_tbl
+
+        n_q_bins = np.maximum(n_env_bins, n_ads_bins)
+        if n_q_bins > 1:
+            tbl_trt = np.tile(tbl_trt, (n_q_bins, 1, 1))
+
+        trait_tbl_q = np.c_[tbl_trt, tbl_env, tbl_ads]
+
+    else:
+        trait_tbl_q = loaded_tbls
+        if trait_tbl_q.ndim == 3:
+            trait_tbl_q = trait_tbl_q[::-1, :, :]
+        if ads > 0:
+            n_taxa = trait_tbl_q.shape[1]
+            n_bins = trait_tbl_q.shape[0]
+            add_zeros = np.zeros(n_taxa * n_bins).reshape((n_bins, n_taxa, 1))
+            trait_tbl_q = np.c_[trait_tbl_q, add_zeros]
+
     w_q = init_weight_prm(n_nodes=nodes, n_features=trait_tbl_q.shape[-1], size_output=1,
                           float_prec_f=float_prec_f, init_std=0.01, bias_node=bias_node)
+
     return float_prec_f(trait_tbl_q), w_q
 
 
@@ -2614,10 +2625,28 @@ def get_names_variable(var_file):
     return vn
 
 
-def interpolate_constant(x, xp, yp):
-    indices = np.searchsorted(xp, x, side='right')
-    y = np.concatenate((yp[0], yp), axis = None)
-    return y[indices]
+def interpolate_categorical(times_comb, times, v):
+    cat_inter = np.round(np.interp(times_comb, times, v))
+    # time points for which we need to interpolate
+    t_inter = np.setdiff1d(times_comb, times)
+    t_inter = t_inter[np.logical_and((t_inter > np.sort(times)[1]), t_inter < np.max(times))]
+
+    for t in t_inter:
+        m_idx = times < t
+        M_idx = times > t
+        # after t
+        m_v = v[m_idx][-1]
+        m_t = times[m_idx][-1]
+        # before t
+        M_t = times[M_idx][0]
+        M_v = v[M_idx][0]
+
+        v_t = M_v
+        if t - m_t > M_t - t:
+            v_t = m_v
+        cat_inter[times_comb == t] == v_t
+
+    return cat_inter
 
 
 def get_binned_time_variable(timebins, var_file, rescale, translate):
@@ -2640,23 +2669,27 @@ def get_binned_time_variable(timebins, var_file, rescale, translate):
         va = np.unique(values[:, i])
         n_va = len(va)
         discr_var[i] = np.all(np.isin(va, np.arange(n_va)))
+
     # If there are no values for the recent, we add the most recent value (i.e. constant environment)
     if (times[0] > timebins[-1]):
         times = np.concatenate((np.zeros(1), times), axis=None)
         values = np.concatenate((values[0, :].reshape((1, -1)), values), axis=0)
+
     # Interpolation if temporal resolution of var_file is lower than time bins
     if nbins > values.shape[0]:
-        times_comb = np.sort(np.concatenate((timebins, times), axis = None))
+        times_comb = np.sort(np.unique(np.concatenate((timebins, times), axis = None)))
         values_comb = np.zeros((len(times_comb), nvars))
         for i in range(nvars):
             if discr_var[i]:
-                values_comb[:, i] = interpolate_constant(times_comb, times, values[:, i])
+                values_comb[:, i] = interpolate_categorical(times_comb, times, values[:, i].reshape(-1))
             else:
                 values_comb[:, i] = np.interp(times_comb, times, values[:, i])
         del(values)
         del(times)
         values = values_comb
         times = times_comb
+
+    # Bining
     for i in range(1, nbins):
         t_max = timebins[i-1]
         t_min = timebins[i]
@@ -2677,6 +2710,40 @@ def get_binned_time_variable(timebins, var_file, rescale, translate):
                 most_freq_state[j] = va[np.argmax(counts)]
             mean_var[i - 1, discr_var] = most_freq_state
     return mean_var, names_var
+
+
+def read_traits(trait_file, taxa_name):
+    if trait_file != "":
+        traitfile = open(trait_file, 'r')
+
+        L = traitfile.readlines()
+        head = L[0].split()
+        names_traits = head[1:]
+        names_traits = [names_traits[i].replace('"', '') for i in range(len(names_traits))]
+        names_traits = [names_traits[i].replace("'", "") for i in range(len(names_traits))]
+
+        trait_val=[l.split() for l in L][1:]
+        trait_values = np.array(trait_val)
+
+        trait_taxa = np.array([l.split()[0] for l in L][1:])
+        trait_taxa = [trait_taxa[i].replace('"', '') for i in range(len(trait_taxa))]
+        trait_taxa = [trait_taxa[i].replace("'", "") for i in range(len(trait_taxa))]
+        trait_taxa = np.array(trait_taxa)
+
+        matched_trait_values = []
+        for i in range(len(taxa_names)):
+            taxa_name = taxa_names[i]
+            matched_val = trait_values[trait_taxa == taxa_name]
+            if len(matched_val) > 0:
+                matched_trait_values.append(matched_val[0, 1:].astype(float))
+            else:
+                matched_trait_values.append(np.nan)
+                sys.exit( "Species %s did not have data" % taxa_name)
+        trait_values = np.array(matched_trait_values)
+    else:
+        names_traits = []
+        trait_values = None
+    return names_traits, trait_values
 
 
 def write_pkl(obj, out_file):
@@ -2737,10 +2804,10 @@ def get_fossil_features_q_shifts(fossil, q_bins, occs_sp, LO):
     return log_factorial_occs, duration_q_bins, occs_single_bin
 
 
-def precompute_fossil_features(arg_q_shift, arg_bdnn_timevar, bdnn_ads, bin_size=1):
+def precompute_fossil_features(arg_q_shift, snn_timevar, bdnn_ads, bin_size=1):
     duration_q_bins = None
     occs_single_bin = None
-    if arg_q_shift == "" and arg_bdnn_timevar == "" and bdnn_ads < 0.0:
+    if arg_q_shift == "" and not snn_timevar and bdnn_ads < 0.0:
         # Constant baseline q
         constant_q = True
         argsHPP = 1
@@ -2770,7 +2837,7 @@ def precompute_fossil_features(arg_q_shift, arg_bdnn_timevar, bdnn_ads, bin_size
         occs_sp = get_occs_sp(fossil, q_bins)
         log_factorial_occs, duration_q_bins, occs_single_bin = get_fossil_features_q_shifts(fossil, q_bins, occs_sp, LO)
         use_HPP_NN_lik = True
-        if (arg_q_shift == "" and bdnn_ads >= 0.0) or (arg_q_shift == "" and arg_bdnn_timevar != ""):
+        if (arg_q_shift == "" and bdnn_ads >= 0.0) or (arg_q_shift == "" and snn_timevar):
             argsHPP = 1
             TPP_model = 0
             constant_q = True
@@ -2804,12 +2871,12 @@ def get_time_in_q_bins(ts, te, time_frames, duration_q_bins, single_bin):
     return d
 
 
-def make_singleton_mask(occs_sp, timevar_q="", ads=-1.0):
+def make_singleton_mask(occs_sp, snn_timevar=False, ads=-1.0):
     s = occs_sp.shape
     if len(s) == 2:
         num_taxa, num_bins = s
         s_mask = np.sum(occs_sp, axis=1) == 1
-        if timevar_q != "" or ads >= 0:
+        if snn_timevar or ads >= 0:
             s_mask = np.repeat(s_mask, num_bins).reshape((num_taxa, num_bins))
     else:
         s_mask = occs_sp == 1
@@ -2849,7 +2916,8 @@ def HPP_NN_lik(arg):
         # Get relative weight of the gamma categories
         lik_vec_exp = np.exp(lik_vec2)
         weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
-        q_rates = np.sum(q_rates * weight_per_taxon[:, :, np.newaxis], axis=0)
+        # Weighted harmonic mean
+        q_rates = np.sum(weight_per_taxon[:, :, np.newaxis], axis=0) / np.sum((1 / q_rates) * weight_per_taxon[:, :, np.newaxis], axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -2875,7 +2943,8 @@ def HOMPP_NN_lik(arg):
         lik = np.log(np.sum(np.exp(lik_vec2), axis=0) / gamma_ncat) + lik_max
         lik_vec_exp = np.exp(lik_vec)
         weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
-        q_rates = np.sum(q_rates * weight_per_taxon, axis=0)
+        # Weighted harmonic mean
+        q_rates = np.sum(weight_per_taxon, axis=0) / np.sum((1 / q_rates) * weight_per_taxon, axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -4017,6 +4086,16 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
         mu  = np.array([float(len(te[te>0]))/sum(ts-te)])    # const rate ML estimator
         hyp = np.ones(2)
 
+    # window size for ts/te proposals
+    try:
+        se_name = mcmc_log_file.replace("mcmc.log", "se_windows.txt")
+        se_windows = np.loadtxt(se_name)
+        d1_ts = se_windows[:, 0]
+        d1_te = se_windows[:, 1]
+    except:
+        d1_ts = np.ones(len(ts))
+        d1_te = np.ones(len(te))
+
     if BDNNmodel:
         from pyrate_lib.bdnn_lib import bdnn_reshape_w
         pkl_file = mcmc_log_file.replace("_mcmc.log", "") + ".pkl"
@@ -4042,7 +4121,7 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
             cov_par[2] = w_q
             cov_par[5] = tbl[last_row, head.index("t_reg_q")]
 
-    return [ts,te,q_rates,lam,mu,hyp,alpha_pp, cov_par]
+    return [ts,te,q_rates,lam,mu,hyp,alpha_pp, cov_par, d1_ts, d1_te]
 
 ########################## MCMC #########################################
 
@@ -4194,7 +4273,7 @@ def MCMC(all_arg):
             if TPP_model == 1:
                 if len(q_ratesA) != time_framesQ:
                     q_ratesA=np.zeros(time_framesQ)+mean(q_ratesA)
-        timevar_qnn = False
+
         if BDNNmodel in [2, 3]:
             cov_parA = cov_par_init_NN
             nn_qA = None
@@ -4206,14 +4285,14 @@ def MCMC(all_arg):
             q_rates_tmp = q_ratesA
             if bdnn_ads >= 0.0:
                 trait_tbl_NN[2] = add_taxon_age(tsA, teA, q_time_frames_bdnn, trait_tbl_NN[2])
-                if not highres_q_repeats is None: #bdnn_ads > 0.0 and argsHPP == 0:
+                if not highres_q_repeats is None:
                     q_rates_tmp = q_ratesA[highres_q_repeats]
             qbin_ts_te = None
             bdnn_q_ratesA = np.zeros(n_taxa)
             if occs_sp.ndim == 2:
-                qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
-                timevar_qnn = True
                 bdnn_q_ratesA = np.zeros((n_taxa, len(q_time_frames_bdnn) - 1))
+            if snn_timevar:
+                qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
             # singleton index to calculate preservation likelihood
             singleton_lik = copy_lib.deepcopy(singleton_mask)
             if singleton_lik.ndim == 2:
@@ -4261,6 +4340,8 @@ def MCMC(all_arg):
 
     if fix_SE == 0:
         d1_ts, d1_te, tste_tune_obj = make_tste_tune_obj(LO, bound_te, d1)
+        if restore_chain:
+            d1_ts, d1_te = restore_init_values[8], restore_init_values[9]
 
     # start threads
     if num_processes>0: pool_lik = multiprocessing.Pool(num_processes) # likelihood
@@ -4372,6 +4453,7 @@ def MCMC(all_arg):
                     ts_or_te_updated = np.random.randint(low=0, high=2, size=1)[0]
                     ts, te = update_ts_te_tune(tsA, teA, d1_ts, d1_te, FA, LO, bound_ts, bound_te,
                                                sample_extinction=ts_or_te_updated)
+                    ind_updated_tste = (ts-te != tsA-teA).nonzero()[0]
                 else:
                     ts, te = update_ts_te(tsA, teA, mod_d1, bound_ts, bound_te)
                 
@@ -4602,7 +4684,7 @@ def MCMC(all_arg):
         if fix_SE == 0 and FBDrange==0:
             ind1=list(range(0,len(fossil)))
             ind2=[]
-            if it>0 and rr<f_update_se and not timevar_qnn: # recalculate likelihood only for ts, te that were updated
+            if it>0 and rr<f_update_se and not snn_timevar: # recalculate likelihood only for ts, te that were updated
                 ind1=((ts-te != tsA-teA).nonzero()[0]).tolist()
                 ind2=(ts-te == tsA-teA).nonzero()[0]
             lik_fossil=zeros(len(fossil))
@@ -4689,7 +4771,7 @@ def MCMC(all_arg):
                                 q_rates_tmp = q_rates
                                 if not highres_q_repeats is None: #bdnn_ads > 0.0 and argsHPP == 0:
                                     q_rates_tmp = q_rates[highres_q_repeats]
-                                if timevar_qnn and ts_te_updated:
+                                if snn_timevar and ts_te_updated:
                                     qbin_ts_te = get_bin_ts_te(ts, te, q_time_frames_bdnn)
                                 if cov_q_updated or (ts_te_updated and bdnn_ads > 0.0):
                                     qnn_output_unreg, nn_q = get_unreg_rate_BDNN_3D(trait_tbl_NN[2], cov_par[2], nn_qA,
@@ -5216,7 +5298,7 @@ def MCMC(all_arg):
                     nn_qA = nn_q
                 if ts_te_updated and tune_T_schedule[0] > 0:
                     d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, LO, bound_te, tste_tune_obj, it,
-                                                                    tune_T_schedule, ind1, ts_or_te_updated,
+                                                                    tune_T_schedule, ind_updated_tste, ts_or_te_updated,
                                                                     accepted=1)
             elif BDNNmodel:
                 if BDNNmodel in [1, 3]:
@@ -5242,7 +5324,7 @@ def MCMC(all_arg):
 #                        qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
             if not is_accepted and ts_te_updated and tune_T_schedule[0] > 0:
                 d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, LO, bound_te, tste_tune_obj, it,
-                                                                tune_T_schedule, ind1, ts_or_te_updated,
+                                                                tune_T_schedule, ind_updated_tste, ts_or_te_updated,
                                                                 accepted=0)
 
         if it % print_freq ==0 or it==burnin:
@@ -5431,6 +5513,8 @@ def MCMC(all_arg):
                 log_state += list(np.mean(d1_ts).flatten())
                 if np.any(LO > 0):
                     log_state += list(np.mean(d1_te[LO > 0]).flatten())
+                if it < tune_T_schedule[0]:
+                    np.savetxt(tune_ts_te_name, np.column_stack((d1_ts, d1_te)), delimiter='\t')
 
             wlog.writerow(log_state)
             logfile.flush()
@@ -5603,7 +5687,7 @@ if __name__ == '__main__':
     p.add_argument('input_data', metavar='<input file>', type=str,help='Input python file - see template',default=[],nargs='*')
     p.add_argument('-j',         type=int, help='number of data set in input file', default=1, metavar=1)
     p.add_argument('-trait',     type=int, help='number of trait for Cov model', default=1, metavar=1)
-    p.add_argument('-logT',      type=int, help='Transform trait (or rates for -plotRJ): 0) False, 1) Ln(x), 2) Log10(x)', default=0, metavar=0)
+    p.add_argument('-logT',      type=int, help='Transform trait (or rates for -plotRJ, -plotQ, and -plotBDNN): 0) False, 1) Ln(x), 2) Log10(x)', default=0, metavar=0)
     p.add_argument("-N",         type=int, help='number of exant species', default=-1)
     p.add_argument("-wd",        type=str, help='path to working directory', default="")
     p.add_argument("-out",       type=str, help='output tag', default="")
@@ -5735,7 +5819,7 @@ if __name__ == '__main__':
     p.add_argument('-BDNNmodel', type=int, help='use neural network model for 1) speciation & extinction, 2) sampling, 3) speciation & extinction & sampling', default=0, metavar=0)
     p.add_argument('-BDNNnodes', type=int, help='number of BD-NN nodes', nargs='+',default=[16, 8])
     p.add_argument('-BDNNfadlad', type=float, help='if > 0 include FAD LAD as traits (rescaled i.e. FAD * BDNNfadlad)', default=0, metavar=0)
-    p.add_argument('-BDNNtimetrait', type=float, help='if > 0 use (rescaled) time as a trait (only with -fixShift option). if = -1 auto-rescaled', default= -1, metavar= -1)
+    p.add_argument('-BDNNtimetrait', type=float, help='if > 0 use (rescaled) time as a trait. If = -1 auto-rescaled; 0 no time as feature', default=-1, metavar=-1)
     p.add_argument('-BDNNtimeres', type=float, help='Time resolution for the BDNN model. Is overridden by -fixShift argument.', default=1, metavar=1)
     p.add_argument('-BDNNconstbaseline', type=int, help='constant baseline rates (only with -fixShift option AND time as a trait)', default=1, metavar=1)
     p.add_argument('-BDNNoutputfun', type=int, help='Activation function output layer: 0) abs, 1) softPlus, 2) exp, 3) relu 4) sigmoid 5) sigmoid_rate', default=1, metavar=1)
@@ -5746,9 +5830,11 @@ if __name__ == '__main__':
     p.add_argument('-BDNNblockmodel',help='Block NN model', action='store_true', default=False)
     p.add_argument('-BDNNactivate_all',help='Activate all hidden layers even if weights were not updated; increases run time', action='store_true', default=False)
     p.add_argument('-BDNNtimevar', type=str, help='Time variable file for birth-death process (e.g. PhanerozoicTempSmooth.txt), several variable in different columns possible. If paths to two different time variable files are provided, the first one is used for lambda and the second for mu', default=[""], metavar="", nargs='+')
-    p.add_argument('-BDNNtimevar_q', type=str, help='Time variable file for sampling process, several variable in different columns possible', default="", metavar="")
-    p.add_argument('-BDNNads', type=float, help='(Relative)age-dependent sampling (-1.0: off; 0.0: use qShifts; >0.0 resample qShifts to this value)', default=-1.0, metavar=1)
+    p.add_argument('-SNNtimevar', type=str, help='Time variable file for sampling process, several variable in different columns possible', default="", metavar="")
+    p.add_argument('-SNNads', type=float, help='(Relative)age-dependent sampling (-1.0: off; 0.0: use qShifts; >0.0 resample qShifts to this value)', default=-1.0, metavar=1)
+    p.add_argument('-SNNtrait_file', type=str, help="Load trait table for sampling neural network model", metavar='<input file>', default="")
     p.add_argument('-BDNNpath_taxon_time_tables', type=str, help='Path to director(y|ies) with table(s) of taxon-time specific predictors. One path for identical speciation/extinction predictors, two paths if they differ.', default=["", ""], nargs='+')
+    p.add_argument('-SNNpath_taxon_time_tables', type=str, help='Path to directory with table(s) of taxon-time specific predictors for sampling.', default="", nargs=1)
     p.add_argument('-BDNNexport_taxon_time_tables', help='Export BDNN predictors. Creates a new directory with one text file per time bin (from most recent to earliest).', action='store_true', default=False)
     p.add_argument('-BDNNupdate_se_f', type=float, help='fraction of updated times of origination and extinction', default=[0.6], metavar=[0.6], nargs=1)
     p.add_argument('-BDNNupdate_f', type=float, help='fraction of updated weights', default=[0.1], metavar=[0.1], nargs='+')
@@ -5997,12 +6083,16 @@ if __name__ == '__main__':
     fixed_times_of_shift_bdnn = []
     bdnn_loaded_tbls = args.BDNNpath_taxon_time_tables
     bdnn_loaded_tbls_timevar = False
-    bdnn_loaded_timevar_pred = False
     if bdnn_loaded_tbls[0] != "":
         import pyrate_lib.bdnn_lib as bdnn_lib
-        bdnn_loaded_tbls, bdnn_loaded_names_traits, bdnn_loaded_timevar_pred = bdnn_lib.load_trait_tbl(bdnn_loaded_tbls)
-        if bdnn_loaded_tbls[0].ndim == 3:
-            bdnn_loaded_tbls_timevar = True
+        bdnn_loaded_tbls, bdnn_loaded_names_traits, bdnn_loaded_tbls_timevar = bdnn_lib.load_trait_tbl(bdnn_loaded_tbls)
+
+    bdnn_timevar_q = args.SNNtimevar
+    snn_timevar = bdnn_timevar_q != ''
+    snn_loaded_tbls = args.SNNpath_taxon_time_tables
+    if snn_loaded_tbls != "":
+        import pyrate_lib.bdnn_lib as bdnn_lib
+        snn_loaded_tbls, snn_loaded_names_traits, snn_timevar = bdnn_lib.load_trait_tbl(snn_loaded_tbls, rate_type="sampling")
 
     needs_bdnn_time = args.BDNNtimetrait != 0 or args.BDNNtimevar[0] or args.BDNNdd or bdnn_loaded_tbls_timevar
     if args.BDNNmodel in [1, 3]:
@@ -6127,20 +6217,24 @@ if __name__ == '__main__':
                 rtt_plot_bds = rtt_plot_bds.plot_marginal_rates(path_dir_log_files,name_tag=file_stem,bin_size=grid_plot,
                         burnin=burnin,min_age=args.min_age_plot,max_age=root_plot,logT=args.logT,n_reps=args.n_prior,min_allowed_t=min_allowed_t)
             elif plot_type== 5:
-                rtt_plot_bds = rtt_plot_bds.RTTplot_Q(path_dir_log_files,args.qShift,burnin=burnin,max_age=root_plot)
+                rtt_plot_bds = rtt_plot_bds.RTTplot_Q(path_dir_log_files,args.qShift,burnin=burnin, logT=args.logT,
+                                                      translate=args.translate, min_age=args.min_age_plot, max_age=root_plot)
             elif plot_type== 6:
                 import pyrate_lib.bdnn_lib as bdnn_lib
-                bdnn_lib.plot_rtt(path_dir_log_files, burn=burnin, translate=args.translate, min_age=args.min_age_plot, max_age=root_plot)
+                bdnn_lib.plot_rtt(path_dir_log_files, burn=burnin, thin=args.resample, translate=args.translate,
+                                  min_age=args.min_age_plot, max_age=root_plot, bdnn_precision=args.BDNNprecision,
+                                  q_shift_file=args.qShift, logT=args.logT)
                 if args.plotBDNN_groups != "":
                     bdnn_lib.plot_bdnn_rtt_groups(path_dir_log_files, args.plotBDNN_groups, burn=burnin,
-                                                  translate=args.translate, min_age=args.min_age_plot, max_age=root_plot, bdnn_precision=args.BDNNprecision)
+                                                  translate=args.translate, min_age=args.min_age_plot, max_age=root_plot,
+                                                  bdnn_precision=args.BDNNprecision, logT=args.logT)
             elif plot_type== 7:
                 import pyrate_lib.bdnn_lib as bdnn_lib
                 bdnn_lib.get_PDRTT(path_dir_log_files, args.BDNN_groups,
                                    burn=burnin, thin=args.resample,
                                    groups_path=args.plotBDNN_groups,
                                    translate=args.translate, min_age=args.min_age_plot, max_age=root_plot,
-                                   bdnn_precision=args.BDNNprecision, num_processes=args.thread[0], show_progressbar=True)
+                                   bdnn_precision=args.BDNNprecision, logT=args.logT, num_processes=args.thread[0], show_progressbar=True)
 
         elif plot_type == 8:
             import pyrate_lib.bdnn_lib as bdnn_lib
@@ -6394,8 +6488,8 @@ if __name__ == '__main__':
     elif args.combBDNN != "":
         from pyrate_lib.bdnn_lib import combine_pkl
         tag = args.tag
-        combine_pkl(args.combBDNN, tag, burnin, args.resample)
         comb_log_files_smart(args.combBDNN, burnin, tag, resample=args.resample, col_tag=args.col_tag, keep_q=True)
+        combine_pkl(args.combBDNN, tag, burnin, args.resample)
         sys.exit("\n")
     elif len(args.input_data)==0 and args.d == "": sys.exit("\nInput file required. Use '-h' for command list.\n")
 
@@ -6654,7 +6748,7 @@ if __name__ == '__main__':
     block_nn_model = args.BDNNblockmodel
     nn_activate_all = args.BDNNactivate_all
     bdnn_timevar = args.BDNNtimevar
-    bdnn_timevar_q = args.BDNNtimevar_q
+    # bdnn_timevar_q = args.SNNtimevar
     bdnn_dd = args.BDNNdd
     div_idx_trt_tbl = -1
     if bdnn_dd and use_time_as_trait:
@@ -6997,19 +7091,19 @@ if __name__ == '__main__':
     else:
         TPP_model = 0
 
-    bdnn_ads = args.BDNNads
+    bdnn_ads = args.SNNads
     if BDNNmodel in [2, 3]:
         args_qShift = args.qShift
         highres_q_repeats = None
-        if bdnn_ads >= 0.0 or (args_qShift != '' and bdnn_timevar_q != ''):
+        if bdnn_ads >= 0.0 or (args_qShift != '' and snn_timevar):
             min_bin_size = bdnn_time_res
             if bdnn_ads >= 0.0:
                 min_bin_size = np.minimum(bdnn_ads, bdnn_time_res)
             highres_q_repeats, times_q_shift = get_highres_repeats(args_qShift, min_bin_size, np.max(FA))
-        argsHPP, occs_sp, log_factorial_occs, duration_q_bins, occs_single_bin, q_time_frames_bdnn, use_HPP_NN_lik, TPP_model, const_q = precompute_fossil_features(args_qShift, bdnn_timevar_q, bdnn_ads, bdnn_time_res)
-        singleton_mask = make_singleton_mask(occs_sp, bdnn_timevar_q, bdnn_ads)
+        argsHPP, occs_sp, log_factorial_occs, duration_q_bins, occs_single_bin, q_time_frames_bdnn, use_HPP_NN_lik, TPP_model, const_q = precompute_fossil_features(args_qShift, snn_timevar, bdnn_ads, bdnn_time_res)
+        singleton_mask = make_singleton_mask(occs_sp, snn_timevar, bdnn_ads)
         apply_reg_q = np.full_like(singleton_mask, True)
-        if (((use_HPP_NN_lik and bdnn_ads <= 0.0) or (not use_HPP_NN_lik and bdnn_time_res < 1.0) or (bdnn_timevar_q != '' and bdnn_time_res == 1)) and not (bdnn_timevar_q != '' and TPP_model == 0)):
+        if (((use_HPP_NN_lik and bdnn_ads <= 0.0) or (not use_HPP_NN_lik and bdnn_time_res < 1.0) or (snn_timevar and bdnn_time_res == 1)) and not (snn_timevar and TPP_model == 0)):
             highres_q_repeats_rtt, times_q_shift_rtt = get_highres_repeats(args_qShift, bdnn_time_res, np.max(FA))
             times_q_shift_rtt = np.concatenate((np.inf, times_q_shift_rtt, np.zeros(1)), axis=None)
         elif (bdnn_ads > 0.0 and bdnn_time_res < bdnn_ads):
@@ -7086,38 +7180,7 @@ if __name__ == '__main__':
                 prior_lam_t_reg = 2 * prior_lam_t_reg
             elif BDNNmodel == 3:
                 prior_lam_t_reg = 3 * prior_lam_t_reg
-    
-        # load trait data
-        names_traits = []
-        if args.trait_file != "":
-            traitfile=open(args.trait_file, 'r')
 
-            L=traitfile.readlines()
-            head= L[0].split()
-            names_traits = head[1:]
-            names_traits = [names_traits[i].replace('"', '') for i in range(len(names_traits))]
-            names_traits = [names_traits[i].replace("'", "") for i in range(len(names_traits))]
-
-            trait_val=[l.split() for l in L][1:]
-
-            trait_values = np.array(trait_val)
-
-            trait_taxa=np.array([l.split()[0] for l in L][1:])
-            trait_taxa = [trait_taxa[i].replace('"', '') for i in range(len(trait_taxa))]
-            trait_taxa = [trait_taxa[i].replace("'", "") for i in range(len(trait_taxa))]
-            trait_taxa = np.array(trait_taxa)
-            matched_trait_values = []
-            for i in range(len(taxa_names)):
-                taxa_name=taxa_names[i]
-                matched_val = trait_values[trait_taxa==taxa_name]
-                if len(matched_val)>0:
-                    matched_trait_values.append(matched_val[0, 1:].astype(float))
-                else:
-                    matched_trait_values.append(np.nan)
-                    sys.exit( "Species %s did not have data" % taxa_name)
-            trait_values= np.array(matched_trait_values)    
-        else:
-            trait_values = None
         n_taxa = len(FA)
     
         if len(fixed_times_of_shift_bdnn) > 0:
@@ -7154,6 +7217,7 @@ if __name__ == '__main__':
             cov_par_init_NN = [0, 0, 0, 1.0, 1.0, 1.0]
             trait_tbl_NN = [None] * 3
             if BDNNmodel in [1, 3]:
+                names_traits, trait_values = read_traits(args.trait_file, taxa_names)
                 time_var_lambda = None
                 time_var_mu = None
                 names_time_var = []
@@ -7189,16 +7253,19 @@ if __name__ == '__main__':
             if BDNNmodel in [2, 3]:
                 hasFoundPyRateC = 0
                 CPPlib = ""
+                names_traits_q, trait_values_q = read_traits(args.SNNtrait_file, taxa_names)
                 time_var_q = None
                 names_time_var_q = []
                 if bdnn_timevar_q:
                     time_var_q, names_time_var_q = get_binned_time_variable(q_time_frames_bdnn, bdnn_timevar_q, args.rescale, args.translate)
-                trait_tbl_NN[2], cov_par_init_NN_q = init_sampling_trait_and_weights(trait_values,
+                trait_tbl_NN[2], cov_par_init_NN_q = init_sampling_trait_and_weights(trait_values_q,
                                                                                      time_var_q,
+                                                                                     bdnn_ads,
                                                                                      n_BDNN_nodes,
                                                                                      bias_node=False,
                                                                                      n_taxa=n_taxa,
                                                                                      replicates_tbls=highres_q_repeats,
+                                                                                     loaded_tbls=snn_loaded_tbls,
                                                                                      float_prec_f=float_prec_f)
                 cov_par_init_NN[2] = cov_par_init_NN_q
                 prior_bdnn_w_q_sd = [np.ones(cov_par_init_NN[2][i].shape) * args.BDNNprior for i in range(len(cov_par_init_NN[2]))]
@@ -7436,7 +7503,7 @@ if __name__ == '__main__':
             not_edgeshift_but_no_time = np.all(rescaled_time == 0.0) == False
             if use_time_as_trait and not_edgeshift_but_no_time:
                 suff_out+= "T"
-            if bdnn_timevar[0] or bdnn_loaded_timevar_pred:
+            if bdnn_timevar[0] or bdnn_loaded_tbls_timevar:
                 suff_out+= "V"
             if bdnn_dd:
                 suff_out+= "DD"
@@ -7448,10 +7515,6 @@ if __name__ == '__main__':
             suff_out+= "q"
 
         # save BDNN object
-        if isinstance(bdnn_loaded_tbls[0], np.ndarray):
-            names_traits = bdnn_loaded_names_traits
-        
-
         bdnn_dict = {
             'hidden_act_f': hidden_act_f,
             'prior_t_reg': prior_lam_t_reg,
@@ -7476,6 +7539,8 @@ if __name__ == '__main__':
             layer_shapes_bd = [cov_par_init_NN[0][i_layer].shape for i_layer in range(len(cov_par_init_NN[0]))]
             layer_sizes_bd = [cov_par_init_NN[0][i_layer].size for i_layer in range(len(cov_par_init_NN[0]))]
             names_features_bd = []
+            if isinstance(bdnn_loaded_tbls[0], np.ndarray):
+                names_traits = bdnn_loaded_names_traits
             names_features_bd += names_traits
             names_features_bd += names_time_var
             if bdnn_dd:
@@ -7513,7 +7578,9 @@ if __name__ == '__main__':
             layer_shapes_q = [cov_par_init_NN[2][i_layer].shape for i_layer in range(len(cov_par_init_NN[2]))]
             layer_sizes_q = [cov_par_init_NN[2][i_layer].size for i_layer in range(len(cov_par_init_NN[2]))]
             names_features_q = []
-            names_features_q += names_traits
+            if isinstance(snn_loaded_tbls, np.ndarray):
+                names_traits_q = snn_loaded_names_traits
+            names_features_q += names_traits_q
             names_features_q += names_time_var_q
             if bdnn_ads >= 0.0:
                 names_features_q += ['taxon_age']
@@ -7543,16 +7610,17 @@ if __name__ == '__main__':
                    sp_fad_lad=sp_fad_lad,
                    occ_data=occ_data)
 
-        # print("obj.bdnn_settings", obj.bdnn_settings, cov_par_init_NN)
         bdnn_obj_out_file = "%s/%s.pkl" % (path_dir,suff_out)
         write_pkl(obj, bdnn_obj_out_file)
         print("\n\nBDNN object saved as:", bdnn_obj_out_file, "\n")
-        # sys.exit()
     
         if args.BDNNexport_taxon_time_tables:
             import pyrate_lib.bdnn_lib as bdnn_lib
-            path_predictors = bdnn_lib.export_trait_tbl(trait_tbl_NN, names_features_bd, output_wd)
-            sys.exit("BDNN predictors export into %s" % path_predictors)
+            if BDNNmodel in [1, 3]:
+                bdnn_lib.export_trait_tbl(trait_tbl_NN[0], names_features_bd, output_wd, time_vec, rate_type="BD")
+            if BDNNmodel in [2, 3]:
+                bdnn_lib.export_trait_tbl(trait_tbl_NN[2], names_features_q, output_wd, q_time_frames_bdnn, rate_type="S")
+            sys.exit()
     
     if mcmc_gen > 0:
         # OUTPUT 0 SUMMARY AND SETTINGS
@@ -7691,6 +7759,7 @@ if __name__ == '__main__':
             head += ["tT_ts"]
             if np.any(LO > 0):
                 head += ["tT_te"]
+            tune_ts_te_name = "%s/%s_se_windows.txt" % (path_dir, suff_out)
 
         wlog=csv.writer(logfile, delimiter='\t')
         wlog.writerow(head)
