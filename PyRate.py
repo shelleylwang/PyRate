@@ -1298,18 +1298,18 @@ def update_rates_sliding_win(L,M,tot_L,mod_d3):
     #Ln,Mn=Ln * scale_factor/tot_L , Mn * scale_factor/tot_L
     return Ln,Mn, 1
 
-def update_parameter_normal_vec(oldL,d,f=.25, float_prec_f=np.float64):
-    S = oldL.shape
-    ii = np.random.normal(0,d,S)
-    ff = np.random.binomial(1,np.min([f, 1]),S)
-    # avoid no update being performed at all
-    if np.sum(ff) == 0:
-        up = np.random.randint(oldL.size, size=1)
-        row, col = np.unravel_index(up, ff.shape)
-        ff[row, col] = 1
-    # print(np.sum(ff), S, f)
-    s= oldL + float_prec_f(ii*ff)
-    return s
+def update_parameter_normal_vec(oldL, d, f=.25, par_mask=None, float_prec_f=np.float64):
+    p = np.copy(oldL)
+    if par_mask is None:
+        row, col = np.where(p)
+    else:
+        row, col = np.where(par_mask == 1)
+    n = len(row)
+    size = np.maximum(1, np.ceil(f * n), dtype=int, casting='unsafe')
+    update = np.random.choice(n, size)
+    ii = float_prec_f(np.random.normal(0, d, size))
+    p[row[update], col[update]] += ii
+    return p
 
 
 def update_rates_multiplier(L,M,tot_L,mod_d3):
@@ -1346,6 +1346,9 @@ def update_rates_multiplier(L,M,tot_L,mod_d3):
 def update_q_multiplier(q,d=1.1,f=0.75):
     S=np.shape(q)
     ff=np.random.binomial(1,f,S)
+    # avoid no update being performed at all
+    if np.sum(ff) == 0:
+        ff[np.random.randint(S, size=1)] = 1
     u = np.random.uniform(0,1,S)
     l = 2*log(d)
     m = exp(l*(u-.5))
@@ -1666,6 +1669,46 @@ def set_bound_se(b_ts, b_te, b_se, taxa, FA, LO, rescale=1, translate=0):
 
     return b_ts, b_te, FA, LO
 
+
+def make_q_tune_obj(q, d, argsG):
+    l = argsG + len(q)
+    q_tune_obj = np.zeros((l, 3)) # attempts, successes, and acceptance ratio for alpha and q
+    d2 = np.repeat(d[1], l)
+    if argsG == 1:
+        d2[0] = d[0]
+    return d2, q_tune_obj
+
+
+def tune_q_windows(d, q_tune_obj,
+                   it, tune_Q_schedule,
+                   updated, accepted=0, target=[0.2, 0.4]):
+
+    # Keep track of acceptance ratio
+    q_tune_obj[updated, 0] += 1
+    q_tune_obj[updated, 1] += accepted
+    q_tune_obj[updated, 2] = q_tune_obj[updated, 1] / q_tune_obj[updated, 0]
+
+    exceeds_tuning_interval = q_tune_obj[:, 0] > tune_Q_schedule[1]
+    any_exceeds_tuning_interval = np.any(exceeds_tuning_interval)
+
+    # Tune window sizes
+    if any_exceeds_tuning_interval and it < tune_Q_schedule[0] and it > 0.1 * tune_Q_schedule[0]:
+        u = np.isin(np.arange(len(d)), updated)
+        too_low = np.logical_and(q_tune_obj[:, 2] < target[0], u)
+        too_high = np.logical_and(q_tune_obj[:, 2] > target[1], u)
+        # decrease window size
+        d[too_low] = 0.95 * d[too_low]
+        d[d < 1.05] = 1.05
+        # increase window size
+        d[too_high] = 1.05 * d[too_high]
+
+    # Reset acceptance ratio calculation
+    if any_exceeds_tuning_interval and it > 0.1 * tune_Q_schedule[0]:
+        q_tune_obj[exceeds_tuning_interval, 0] = 0
+        q_tune_obj[exceeds_tuning_interval, 1] = 0
+        q_tune_obj[exceeds_tuning_interval, 2] = 0
+
+    return d, q_tune_obj
 
 
 def seed_missing(x,m,s): # assigns random normally distributed trait values to missing data
@@ -2923,7 +2966,7 @@ def HPP_NN_lik(arg):
         # weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
         weight_per_taxon = np.exp(lik_vec - np.logaddexp.reduce(lik_vec)) # prevent underflow
         # Weighted harmonic mean
-        q_rates = np.sum(weight_per_taxon[:, :, np.newaxis], axis=0) / np.sum((1 / q_rates) * weight_per_taxon[:, :, np.newaxis], axis=0)
+        q_rates = 1 / np.sum((1 / q_rates) * weight_per_taxon[:, :, np.newaxis], axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -2953,7 +2996,7 @@ def HOMPP_NN_lik(arg):
         # weight_per_taxon = lik_vec_exp / np.sum(lik_vec_exp, axis=0)
         weight_per_taxon = np.exp(lik_vec - np.logaddexp.reduce(lik_vec)) # prevent underflow
         # Weighted harmonic mean
-        q_rates = np.sum(weight_per_taxon, axis=0) / np.sum((1 / q_rates) * weight_per_taxon, axis=0)
+        q_rates = 1 / np.sum((1 / q_rates) * weight_per_taxon, axis=0)
     return lik, q_rates, weight_per_taxon
 
 
@@ -2996,11 +3039,19 @@ def add_taxon_age(ts, te, q_time_frames, trt_tbl, tsA=None, teA=None):
         trt_tbl[:, i, -1] = 0.0
         age = np.arange(te[i], ts[i], step=step_size)
         age_bins = np.digitize(age, bins) - 1
+
+        step_size_too_large = np.any(np.diff(np.unique(age_bins)) > 1)
+        d = 2
+        while step_size_too_large:
+            age = np.arange(te[i], ts[i], step=step_size/d)
+            age_bins = np.digitize(age, bins) - 1
+            d += 1
+            step_size_too_large = np.any(np.diff(np.unique(age_bins)) > 1)
+
         u, c = np.unique(age_bins, return_counts=True)
         rel_age = np.array([0.5])
         if (ts[i] - te[i]) >= step_size:
             age_norm = (age - np.min(age)) / np.ptp(age)
-            # This give 0.5 if a taxon occurs in just a single bin
             rel_age = np.bincount(age_bins - np.min(age_bins), weights=age_norm) / c
         trt_tbl[n_bins - u, i, -1] = rel_age[::-1]
 #    trt_tbl[:, ts_te_changed, -1] -= 0.5 # center in 0
@@ -3255,12 +3306,17 @@ def HPP_vec_lik(arg, return_rate=False):
             lik2 = np.ones(pp_gamma_ncat) / pp_gamma_ncat
     if return_rate:
         pr = np.exp(lik2) / np.sum(np.exp(lik2))
-        weighted_mean = np.sum(YangGamma * pr)
+        # Weighted harmonic mean
+        if np.sum(k_vec[ind]) == 1:
+            weighted_mean = q_rates
+        else:
+            weighted_mean = 1 / np.sum((1 / (q_rates[np.newaxis, :] * YangGamma.reshape((pp_gamma_ncat, -1)))) * pr.reshape((pp_gamma_ncat, -1)), axis=0)
+        weighted_mean = weighted_mean.tolist()
         return weighted_mean
     else:
         return lik
 
-def HOMPP_lik(arg):
+def HOMPP_lik(arg, return_rate=False):
     [m,M,shapeGamma,q_rate,i,cov_par, ex_rate]=arg
     i=int(i)
     x=fossil[i]
@@ -3278,8 +3334,16 @@ def HOMPP_lik(arg):
         lik1= -qGamma*(br_length) + log(qGamma)*k - sum(log(np.arange(1,k+1)))  -log(1-exp(-qGamma*(br_length)))
         maxLik1 = np.max(lik1)
         lik2= lik1-maxLik1
-        lik=log(sum(exp(lik2)*(1./pp_gamma_ncat)))+maxLik1
-        return lik
+        if return_rate:
+            if k == 1:
+                weighted_mean = q
+            else:
+                pr = np.exp(lik2) / np.sum(np.exp(lik2))
+                weighted_mean = 1 / np.sum((1 / qGamma) * pr)
+            return [weighted_mean]
+        else:
+            lik=log(sum(exp(lik2)*(1./pp_gamma_ncat)))+maxLik1
+            return lik
     else:
         return -q*(br_length) + log(q)*k - sum(log(np.arange(1,k+1))) - log(1-exp(-q*(br_length)))
 
@@ -4049,6 +4113,7 @@ def get_rate_HP(n,target_k,hp_gamma_shape):
 
 ####### END FUNCTIONS for DIRICHLET PROCESS PRIOR #######
 
+
 def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
     tbl = np.loadtxt(mcmc_log_file,skiprows=1)
     last_row = np.shape(tbl)[0]-1
@@ -4067,33 +4132,55 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
 
     alpha_pp=1
     cov_par = np.zeros(3)
+    timesL, timesM = None, None
     try:
         q_rates_index = np.array([head.index("alpha"), head.index("q_rate")])
         q_rates = tbl[last_row,q_rates_index]
     except:
-        q_rates_index = [head.index(i) for i in head if i.startswith('q_')]
-        q_rates = tbl[last_row,q_rates_index]
+        try:
+            q_rates_index = [head.index(i) for i in head if i.startswith('q_')]
+            q_rates = tbl[last_row,q_rates_index]
+        except: 
+            q_rate = np.ones(2)
         try:
             alpha_pp = tbl[last_row,head.index("alpha")]
         except: pass
-    ts = tbl[last_row,ts_index]
-    te = tbl[last_row,te_index]
-    if len(fixed_times_of_shift)>0: # fixShift
-        try:
-            hyp_index = [head.index("hypL"), head.index("hypM")]
-            l_index = [head.index(i) for i in head if "lambda_" in i]
-            m_index = [head.index(i) for i in head if "mu_" in i]
-            lam = tbl[last_row,l_index]
-            mu  = tbl[last_row,m_index]
-            hyp = tbl[last_row,hyp_index]
-        except:
-            lam = np.array([float(len(ts))/sum(ts-te)      ])    # const rate ML estimator
-            mu  = np.array([float(len(te[te>0]))/sum(ts-te)])    # const rate ML estimator
+
+    try:
+        ts = tbl[last_row,ts_index]
+        te = tbl[last_row,te_index]
+        if len(fixed_times_of_shift)>0: # fixShift
+            try:
+                hyp_index = [head.index("hypL"), head.index("hypM")]
+                l_index = [head.index(i) for i in head if "lambda_" in i]
+                m_index = [head.index(i) for i in head if "mu_" in i]
+                lam = tbl[last_row,l_index]
+                mu  = tbl[last_row,m_index]
+                hyp = tbl[last_row,hyp_index]
+            except:
+                lam = np.array([float(len(ts))/sum(ts-te)      ])    # const rate ML estimator
+                mu  = np.array([float(len(te[te>0]))/sum(ts-te)])    # const rate ML estimator
+                hyp = np.ones(2)
+        else:
             hyp = np.ones(2)
-    else:
-        lam = np.array([float(len(ts))/sum(ts-te)      ])    # const rate ML estimator
-        mu  = np.array([float(len(te[te>0]))/sum(ts-te)])    # const rate ML estimator
-        hyp = np.ones(2)
+            if TDI == 4:
+                k_birth = int(tbl[last_row, head.index("k_birth")])
+                k_death = int(tbl[last_row, head.index("k_death")])
+                lam_log_name = mcmc_log_file.replace("mcmc.log", "sp_rates.log")
+                with open(lam_log_name, "r") as f:
+                    last_lam = f.readlines()[last_row]
+                    lam_times = np.array(last_lam.strip().split(), dtype=float)
+                mu_log_name = mcmc_log_file.replace("mcmc.log", "ex_rates.log")
+                with open(mu_log_name, "r") as f:
+                    last_mu = f.readlines()[last_row]
+                    mu_times = np.array(last_mu.strip().split(), dtype=float)
+                timesL = np.concatenate((np.inf, lam_times[k_birth:], 0), axis=None)
+                timesM = np.concatenate((np.inf, mu_times[k_death:], 0), axis=None)
+                lam = lam_times[:k_birth]
+                mu = mu_times[:k_death]
+    except:
+        o = np.ones(1)
+        ts, te, lam, mu, hyp = o, o, o, o, o
 
     # window size for ts/te proposals
     try:
@@ -4102,8 +4189,15 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
         d1_ts = se_windows[:, 0]
         d1_te = se_windows[:, 1]
     except:
-        d1_ts = np.ones(len(ts))
-        d1_te = np.ones(len(te))
+        d1_ts = np.ones(1)
+        d1_te = np.ones(1)
+
+    # window size for q proposals
+    try:
+        q_name = mcmc_log_file.replace("mcmc.log", "q_windows.txt")
+        d2 = np.loadtxt(q_name)
+    except:
+        d2 = np.ones(1)
 
     if BDNNmodel:
         from pyrate_lib.bdnn_lib import bdnn_reshape_w
@@ -4130,7 +4224,7 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
             cov_par[2] = w_q
             cov_par[5] = tbl[last_row, head.index("t_reg_q")]
 
-    return [ts,te,q_rates,lam,mu,hyp,alpha_pp, cov_par, d1_ts, d1_te]
+    return [ts,te,q_rates,lam,mu,hyp,alpha_pp, cov_par, d1_ts, d1_te, d2, timesL, timesM]
 
 ########################## MCMC #########################################
 
@@ -4160,7 +4254,7 @@ def MCMC(all_arg):
             teA[teA>LO]=LO[teA>LO]-1
             teA[teA<0]=teA_temp[teA<0]
         maxTSA = np.max(tsA)
-        
+
         timesLA, timesMA = init_times(maxTSA,time_framesL,time_framesM, np.min(teA))
         if len(fixed_times_of_shift) > 0:
             timesLA[1:-1], timesMA[1:-1] = fixed_times_of_shift, fixed_times_of_shift
@@ -4220,7 +4314,13 @@ def MCMC(all_arg):
             if use_Death_model == 1: LA = np.ones(1)
             if use_Birth_model == 1: MA = np.zeros(1)+init_M_rate
             rj_cat_HP= 1
-        
+            if restore_chain:
+                timesLA = restore_init_values[11]
+                timesMA = restore_init_values[12]
+                LA = restore_init_values[3]
+                MA = restore_init_values[4]
+                rj_cat_HP = get_post_rj_HP(len(LA),len(MA))
+
         q_ratesA,cov_parA = init_q_rates() # use 1 for symmetric PERT
         
         if BDNNmodel in [1, 3]:
@@ -4341,16 +4441,20 @@ def MCMC(all_arg):
                 if args_bdc:
                     r_treeA = np.ones(len(phylo_times_of_shift))*0.8
 
+        if fix_SE == 0:
+            d1_ts, d1_te, tste_tune_obj = make_tste_tune_obj(LO, bound_te, d1)
+            if restore_chain == 1 and tune_T_schedule[0] > 0:
+                d1_ts, d1_te = restore_init_values[8], restore_init_values[9]
+
+            d2, q_tune_obj = make_q_tune_obj(q_ratesA, d_q, argsG)
+            if restore_chain == 1 and tune_Q_schedule[0] > 0:
+                d2 = restore_init_values[10]
+
     else: # restore values
         [itt, n_proc_,PostA, likA, priorA,tsA,teA,timesLA,timesMA,LA,MA,q_ratesA, cov_parA, lik_fossilA,likBDtempA]=arg
         SA=np.sum(tsA-teA)
 
 
-
-    if fix_SE == 0:
-        d1_ts, d1_te, tste_tune_obj = make_tste_tune_obj(LO, bound_te, d1)
-        if restore_chain:
-            d1_ts, d1_te = restore_init_values[8], restore_init_values[9]
 
     # start threads
     if num_processes>0: pool_lik = multiprocessing.Pool(num_processes) # likelihood
@@ -4446,6 +4550,7 @@ def MCMC(all_arg):
 
         updated_lam_mu = False
         ts_te_updated = 0
+        q_updated = 0
         cov_lam_updated = 0
         cov_mu_updated = 0
         cov_q_updated = 0
@@ -4522,17 +4627,24 @@ def MCMC(all_arg):
             tot_L=np.sum(ts-te)
         
         elif rr<f_update_q: # q/alpha
+            q_updated = 1
             move_type = 2
             q_rates=np.zeros(len(q_ratesA))+q_ratesA
             if TPP_model == 1:
-                q_rates, hasting = update_q_multiplier(q_ratesA,d=d2[1],f=f_qrate_update)
-                if np.random.random()> 1./len(q_rates) and argsG == 1:
-                    alpha_pp_gamma, hasting2 = update_multiplier_proposal(alpha_pp_gammaA,d2[0]) # shape prm Gamma
-                    hasting += hasting2
+                hasting = 0
+                if np.random.random() > ((1./len(q_rates)) * argsG):
+                    q_rates, hasting2 = update_q_multiplier(q_ratesA, d=d2[argsG:], f=f_qrate_update)
+                    ind_updated_q = (q_ratesA - q_rates).nonzero()[0] + argsG
+                else:
+                    alpha_pp_gamma, hasting2 = update_multiplier_proposal(alpha_pp_gammaA, d2[0]) # shape prm Gamma
+                    ind_updated_q = 0
+                hasting += hasting2
             elif np.random.random()>.5 and argsG == 1:
-                q_rates[0], hasting=update_multiplier_proposal(q_ratesA[0],d2[0]) # shape prm Gamma
+                q_rates[0], hasting=update_multiplier_proposal(q_ratesA[0], d2[0]) # shape prm Gamma
+                ind_updated_q = 0
             else:
-                q_rates[1], hasting=update_multiplier_proposal(q_ratesA[1],d2[1]) #  preservation rate (q)
+                q_rates[1], hasting=update_multiplier_proposal(q_ratesA[1], d2[1]) #  preservation rate (q)
+                ind_updated_q = 1
 
         elif rr < f_update_lm: # l/m
             updated_lam_mu = True
@@ -4615,11 +4727,12 @@ def MCMC(all_arg):
                     # update layers B rate
                     cov_lam_updated = 1
                     rnd_layer_lam = np.random.randint(0, len(cov_parA[0]))
-                    cov_par[0][rnd_layer_lam] = update_parameter_normal_vec(cov_parA[0][rnd_layer_lam], d=0.05, f=bdnn_update_f[rnd_layer_lam], float_prec_f=float_prec_f)
+                    cov_par[0][rnd_layer_lam] = update_parameter_normal_vec(cov_parA[0][rnd_layer_lam],
+                                                                            d=0.05,
+                                                                            f=bdnn_update_f[rnd_layer_lam],
+                                                                            par_mask=BDNN_MASK_lam[rnd_layer_lam],
+                                                                            float_prec_f=float_prec_f)
                     bdnn_prior_cov_par[0] = np.sum([np.sum(prior_normal(cov_par[0][i],prior_bdnn_w_sd[i])) for i in range(len(cov_par[0]))])
-                    if BDNN_MASK_lam:
-                        for i_layer in range(len(cov_parA[0])):
-                            cov_par[0][i_layer] *= BDNN_MASK_lam[i_layer]
                 elif rr_cov_lam_mu < cov_par_update_f[2] and prior_lam_t_reg[1] > 0:
                     # update treg mu
                     cov_mu_updated = 1
@@ -4630,11 +4743,12 @@ def MCMC(all_arg):
                     # update layers D rate
                     cov_mu_updated = 1
                     rnd_layer_mu = np.random.randint(0, len(cov_parA[1]))
-                    cov_par[1][rnd_layer_mu] = update_parameter_normal_vec(cov_parA[1][rnd_layer_mu], d=0.05, f=bdnn_update_f[rnd_layer_mu], float_prec_f=float_prec_f)
+                    cov_par[1][rnd_layer_mu] = update_parameter_normal_vec(cov_parA[1][rnd_layer_mu],
+                                                                           d=0.05,
+                                                                           f=bdnn_update_f[rnd_layer_mu],
+                                                                           par_mask=BDNN_MASK_mu[rnd_layer_mu],
+                                                                           float_prec_f=float_prec_f)
                     bdnn_prior_cov_par[1] = np.sum([np.sum(prior_normal(cov_par[1][i],prior_bdnn_w_sd[i])) for i in range(len(cov_par[1]))])
-                    if BDNN_MASK_mu:
-                        for i_layer in range(len(cov_parA[1])):
-                            cov_par[1][i_layer] *= BDNN_MASK_mu[i_layer]
                 # Recalculate bdnn rates when we updated cov_par
                 if cov_lam_updated:
                     bdnn_lam_rates, denom_lam, nn_lam = get_rate_BDNN_3D(cov_par[3], trait_tbl_NN[0], cov_par[0], nn_lamA,
@@ -5309,6 +5423,9 @@ def MCMC(all_arg):
                     d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, LO, bound_te, tste_tune_obj, it,
                                                                     tune_T_schedule, ind_updated_tste, ts_or_te_updated,
                                                                     accepted=1)
+                elif q_updated and tune_Q_schedule[0] > 0:
+                    d2, q_tune_obj = tune_q_windows(d2, q_tune_obj, it, tune_Q_schedule,
+                                                    ind_updated_q, accepted=1)
             elif BDNNmodel:
                 if BDNNmodel in [1, 3]:
                     bdnn_lam_rates = bdnn_lam_ratesA
@@ -5331,10 +5448,14 @@ def MCMC(all_arg):
                     nn_q = nn_qA
 #                    if trait_tbl_NN[2].ndim == 3 and ts_te_updated == 1:
 #                        qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
-            if not is_accepted and ts_te_updated and tune_T_schedule[0] > 0:
-                d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, LO, bound_te, tste_tune_obj, it,
-                                                                tune_T_schedule, ind_updated_tste, ts_or_te_updated,
-                                                                accepted=0)
+            if not is_accepted:
+                if ts_te_updated and tune_T_schedule[0] > 0:
+                    d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, LO, bound_te, tste_tune_obj, it,
+                                                                    tune_T_schedule, ind_updated_tste, ts_or_te_updated,
+                                                                    accepted=0)
+                elif q_updated and tune_Q_schedule[0] > 0:
+                    d2, q_tune_obj = tune_q_windows(d2, q_tune_obj, it, tune_Q_schedule,
+                                                    ind_updated_q, accepted=0)
 
         if it % print_freq ==0 or it==burnin:
             try: l=[round(y, 2) for y in [PostA, likA, priorA, SA]]
@@ -5504,9 +5625,13 @@ def MCMC(all_arg):
             if sp_specific_q_rates:
                 sp_q_rates = []
                 for i in range(len(tsA)):
-                    w_rates = HPP_vec_lik([teA[i],tsA[i],q_time_frames,q_ratesA,i,alpha_pp_gamma], return_rate=True)
-                    sp_q_rates.append(w_rates)
-                
+                    if TPP_model == 1:
+                        w_rates = HPP_vec_lik([teA[i],tsA[i],q_time_frames,q_ratesA,i,alpha_pp_gamma], return_rate=True)
+                    else:
+                        w_rates = HOMPP_lik([te[i], ts[i], q_rates[0], q_rates[1], i, cov_par[2], 0.0], return_rate=True)
+                    # sp_q_rates.append(w_rates)
+                    sp_q_rates = sp_q_rates + w_rates
+
                 sp_q_marg.writerow([it, alpha_pp_gammaA] + sp_q_rates)
                 sp_q_marg_rate_file.flush()
                 os.fsync(sp_q_marg_rate_file)
@@ -5515,15 +5640,24 @@ def MCMC(all_arg):
                 log_state += list(tsA)
                 log_state += list(teA)
 
-            if tune_T_schedule[0] > 0:
-                log_state += list(np.mean(tste_tune_obj[:, 2]).flatten())
-                if np.any(LO > 0):
-                    log_state += list(np.mean(tste_tune_obj[LO > 0, 5]).flatten())
-                log_state += list(np.mean(d1_ts).flatten())
-                if np.any(LO > 0):
-                    log_state += list(np.mean(d1_te[LO > 0]).flatten())
-                if it < tune_T_schedule[0]:
-                    np.savetxt(tune_ts_te_name, np.column_stack((d1_ts, d1_te)), delimiter='\t')
+                if tune_T_schedule[0] > 0:
+                    log_state += list(np.mean(tste_tune_obj[:, 2]).flatten())
+                    if np.any(LO > 0):
+                        log_state += list(np.mean(tste_tune_obj[LO > 0, 5]).flatten())
+                    log_state += list(np.mean(d1_ts).flatten())
+                    if np.any(LO > 0):
+                        log_state += list(np.mean(d1_te[LO > 0]).flatten())
+                    if it < tune_T_schedule[0]:
+                        np.savetxt(tune_ts_te_name, np.column_stack((d1_ts, d1_te)), delimiter='\t')
+
+                if tune_Q_schedule[0] > 0:
+                    if argsG == 1:
+                        log_state += [q_tune_obj[0, 2]]
+                        log_state += [d2[0]]
+                    log_state += list(np.mean(q_tune_obj[argsG:, 2]).flatten())
+                    log_state += list(np.mean(d2[argsG:]).flatten())
+                    if it < tune_Q_schedule[0]:
+                        np.savetxt(tune_q_name, d2, delimiter='\t')
 
             wlog.writerow(log_state)
             logfile.flush()
@@ -5862,7 +5996,6 @@ if __name__ == '__main__':
     # TUNING
     p.add_argument('-tT',     type=float, help='Tuning - window size (ts, te)', default=1., metavar=1.)
     p.add_argument('-nT',     type=int,   help='Tuning - max number updated values (ts, te)', default=5, metavar=5)
-    p.add_argument('-tuneT',  type=float, help='Autotuning window sizes tT. Maximum iteration and tuning interval', default=[0, 1000], nargs=2)
     p.add_argument('-tQ',     type=float, help='Tuning - window sizes (q/alpha: 1.2 1.2)', default=[1.2,1.2], nargs=2)
     p.add_argument('-tR',     type=float, help='Tuning - window size (rates)', default=1.2, metavar=1.2)
     p.add_argument('-tS',     type=float, help='Tuning - window size (time of shift)', default=1., metavar=1.)
@@ -5873,6 +6006,8 @@ if __name__ == '__main__':
     p.add_argument('-fU',     type=float, help='Tuning - update freq. (q: .02, l/m: .18, cov: .08)', default=[.02, .18, .08], nargs=3)
     p.add_argument('-multiR', type=int,   help='Tuning - Proposals for l/m: 0) sliding win 1) muliplier ', default=1, metavar=1)
     p.add_argument('-tHP',    type=float, help='Tuning - window sizes hyperpriors on l and m', default=[1.2, 1.2], nargs=2)
+    p.add_argument('-tuneT',  type=float, help='Autotuning window sizes tT. Maximum iteration and tuning interval', default=[0, 1000], nargs=2)
+    p.add_argument('-tuneQ',  type=float, help='Autotuning window sizes tQ. Maximum iteration and tuning interval', default=[0, 1000], nargs=2)
 
     args = p.parse_args()
     t1=time.time()
@@ -5918,9 +6053,8 @@ if __name__ == '__main__':
     model_cov=args.mCov           # boolean 0: no covariance 1: covariance (speciation,extinction) 2: covariance (speciation,extinction,preservation)
 
     sp_specific_q_rates = args.log_sp_q_rates
-    if sp_specific_q_rates:
-        if argsG == 0 or args.qShift == "":
-            sys.exit("option only available with TPP + Gamma model")
+    if sp_specific_q_rates and argsG == 0:
+        sys.exit("log_sp_q_rates option only available with Gamma model")
     
     edge_indicator = args.edge_indicator
 
@@ -5971,14 +6105,20 @@ if __name__ == '__main__':
     frac1= args.nT                 # max number updated values (ts, te)
     tune_T_schedule = args.tuneT   # schedule tuning win-size (ts, te)
     if args.tuneT[0] > 0 and args.tuneT[0] < 1:
-        tune_T_schedule[0] = int(args.tuneT[0] * mcmc_gen)        
-    
-    d2=args.tQ                     # win-sizes (q,alpha)
+        tune_T_schedule[0] = int(args.tuneT[0] * mcmc_gen)
+
+    d_q = args.tQ                  # win-sizes (q,alpha)
+    f_qrate_update =args.fQ        # update frequency (preservation rates under TPP model)
+    tune_Q_schedule = args.tuneQ   # schedule tuning win-size (q rates)
+    if tune_Q_schedule[0] > 0:
+        f_qrate_update = 0.0
+        if tune_Q_schedule[0] > 0 and tune_Q_schedule[0] < 1:
+            tune_Q_schedule[0] = int(tune_Q_schedule[0] * mcmc_gen)
+
     d3=args.tR                     # win-size (rates)
     f_rate=args.fR                 # fraction of updated values (rates)
     d4=args.tS                     # win-size (time of shift)
     f_shift=args.fS                # update frequency (time of shift) || will turn into 0 when no rate shifts
-    f_qrate_update =args.fQ        # update frequency (preservation rates under TPP model)
     freq_list=args.fU              # generate update frequencies by parm category
     d5=args.tC                     # win-size (cov)
     d_hyperprior=np.array(args.tHP)          # win-size hyper-priors onf l/m (or W_scale)
@@ -6352,7 +6492,7 @@ if __name__ == '__main__':
                                                                thin=args.resample,
                                                                min_bs=args.BDNN_pred_importance_window_size[-1],
                                                                n_perm=args.BDNN_pred_importance_nperm,
-                                                               combine_discr_features= copy_lib.deepcopy(args.BDNN_groups),
+                                                               combine_discr_features=copy_lib.deepcopy(args.BDNN_groups),
                                                                do_inter_imp=do_inter_imp,
                                                                bdnn_precision=args.BDNNprecision,
                                                                num_processes=args.thread[0],
@@ -6443,7 +6583,7 @@ if __name__ == '__main__':
         path_dir_log_files = args.BDNN_interaction.replace("_mcmc.log", "")
         pkl_file = path_dir_log_files + ".pkl"
         mcmc_file = path_dir_log_files + "_mcmc.log"
-        bdnn_obj, w_sp, w_ex, _, sp_fad_lad, ts_post, te_post, t_reg_lam, t_reg_mu, _, reg_denom_lam, reg_denom_mu, _, _, _ = bdnn_lib.bdnn_parse_results(mcmc_file, pkl_file, burnin, args.resample)
+        bdnn_obj, w_sp, w_ex, _, sp_fad_lad, ts_post, te_post, t_reg_lam, t_reg_mu, _, reg_denom_lam, reg_denom_mu, _, _, _, _ = bdnn_lib.bdnn_parse_results(mcmc_file, pkl_file, burnin, args.resample)
         backscale_par = bdnn_lib.read_backscale_file(args.plotBDNN_transf_features)
         sp_inter, sp_trt_tbl, names_features = bdnn_lib.get_pdp_rate_free_combination(bdnn_obj, sp_fad_lad, ts_post, te_post,
                                                                                       w_sp, t_reg_lam, reg_denom_lam,
@@ -6808,7 +6948,13 @@ if __name__ == '__main__':
         if use_se_tbl==1: pass
         else:
             fix_SE=1
-            fixed_ts, fixed_te= calc_ts_te(args.fixSE, burnin=args.b)
+            if args.fixSE == "0":
+                fixed_ts = FA + 0
+                fixed_te = LO + 0
+                d_tmp = fixed_ts - fixed_te
+                fixed_ts[d_tmp == 0] = fixed_ts[d_tmp == 0] + 0.1
+            else:
+                fixed_ts, fixed_te= calc_ts_te(args.fixSE, burnin=args.b)
     else: fix_SE=0
 
     if args.discrete == 1: useDiscreteTraitModel = 1
@@ -7291,20 +7437,21 @@ if __name__ == '__main__':
                 nodes_time = n_BDNN_nodes[0] - nodes_traits
                 indx_input_list_2 = np.concatenate((np.zeros(nodes_traits),np.ones(nodes_time))).astype(int)
                 nodes_per_feature_list = [list(np.unique(indx_input_list_2, return_counts=True)[1])]
-                if len(n_BDNN_nodes) == 2:
-                    nodes_traits = int(n_BDNN_nodes[1] / 2)
-                    nodes_time = n_BDNN_nodes[1] - nodes_traits
+                for i in range(1, len(n_BDNN_nodes)):
+                    nodes_traits = int(n_BDNN_nodes[i] / 2)
+                    nodes_time = n_BDNN_nodes[i] - nodes_traits
                     nodes_per_feature_list.append([nodes_traits, nodes_time])
                 nodes_per_feature_list.append([])
-        
+
                 BDNN_MASK_lam = create_mask(cov_par_init_NN[0],
                                             indx_input_list=[indx_input_list_1, indx_input_list_2, []],
                                             # nodes_per_feature_list=[[1, 1], [1, 1], []])
                                             nodes_per_feature_list=nodes_per_feature_list) # [[4, 4], [1, 1], []]
                 BDNN_MASK_mu = create_mask(cov_par_init_NN[1],
-                                           indx_input_list=[indx_input_list_1, indx_input_list_2, []],
-                                           # nodes_per_feature_list=[[1, 1], [1, 1], []])
-                                           nodes_per_feature_list=nodes_per_feature_list) # [[4, 4], [1, 1], []]
+                                        indx_input_list=[indx_input_list_1, indx_input_list_2, []],
+                                        # nodes_per_feature_list=[[1, 1], [1, 1], []])
+                                        nodes_per_feature_list=nodes_per_feature_list) # [[4, 4], [1, 1], []]
+
                 if has_invariant_bdnn_pred:
                     # Block input of invariant predictors into neural network
                     if block_nn_model is False:
@@ -7315,10 +7462,13 @@ if __name__ == '__main__':
                     BDNN_MASK_mu[0][:, invariant_bdnn_pred[1]] = 0.0
                 else:
                     [print("\n", i) for i in BDNN_MASK_lam]
-        
+
+                for i_layer in range(len(cov_par_init_NN[0])):
+                    cov_par_init_NN[0][i_layer] *= BDNN_MASK_lam[i_layer]
+                    cov_par_init_NN[1][i_layer] *= BDNN_MASK_mu[i_layer]
             else:
-                BDNN_MASK_lam = None
-                BDNN_MASK_mu = None
+                BDNN_MASK_lam = [None] * (len(n_BDNN_nodes) + 1)
+                BDNN_MASK_mu = [None] * (len(n_BDNN_nodes) + 1)
         #---
             if False:
                 print(rescaled_time)
@@ -7332,10 +7482,6 @@ if __name__ == '__main__':
         bdnn_settings = ""
         if BDNNmodel in [1, 3]:
             for i_layer in range(len(cov_par_init_NN[0])):
-                if BDNN_MASK_lam:
-                    cov_par_init_NN[0][i_layer] *= BDNN_MASK_lam[i_layer]
-                if BDNN_MASK_mu:
-                    cov_par_init_NN[1][i_layer] *= BDNN_MASK_mu[i_layer]
                 n_prm += cov_par_init_NN[0][i_layer].size
                 n_free_prm += np.sum(cov_par_init_NN[0][i_layer] != 0)
                 bdnn_settings = bdnn_settings + "\n %s" % str(cov_par_init_NN[0][i_layer].shape)
@@ -7345,7 +7491,7 @@ if __name__ == '__main__':
                 n_free_prm += np.sum(cov_par_init_NN[2][i_layer] != 0)
                 bdnn_settings = bdnn_settings + "\n %s" % str(cov_par_init_NN[2][i_layer].shape)
 
-        bdnn_settings = "\n\nUsing BDNN model\nN. free parameters: %s \nN. parameters: %s\n%s\n" % (n_prm, n_free_prm, bdnn_settings)
+        bdnn_settings = "\n\nUsing BDNN model\nN. free parameters: %s \nN. parameters: %s\n%s\n" % (n_free_prm, n_prm, bdnn_settings)
         print(bdnn_settings)
 
 
@@ -7612,7 +7758,7 @@ if __name__ == '__main__':
                 })
             if not highres_q_repeats is None: # bdnn_ads >= 0.0:
                 bdnn_dict.update({'highres_q_repeats': highres_q_repeats})
-        
+
         obj = bdnn(bdnn_settings=bdnn_dict,
                    weights=cov_par_init_NN,
                    trait_tbls=trait_tbl_NN,
@@ -7761,14 +7907,22 @@ if __name__ == '__main__':
             for i in taxa_names: head.append("%s_TS" % (i))
             for i in taxa_names: head.append("%s_TE" % (i))
 
-        if tune_T_schedule[0] > 0:
-            head += ["accept_ratio_ts"]
-            if np.any(LO > 0):
-                head += ["accept_ratio_te"]
-            head += ["tT_ts"]
-            if np.any(LO > 0):
-                head += ["tT_te"]
-            tune_ts_te_name = "%s/%s_se_windows.txt" % (path_dir, suff_out)
+            if tune_T_schedule[0] > 0:
+                head += ["accept_ratio_ts"]
+                if np.any(LO > 0):
+                    head += ["accept_ratio_te"]
+                head += ["tT_ts"]
+                if np.any(LO > 0):
+                    head += ["tT_te"]
+                tune_ts_te_name = "%s/%s_se_windows.txt" % (path_dir, suff_out)
+
+            if tune_Q_schedule[0] > 0:
+                if argsG == 1:
+                    head += ["accept_ratio_alpha"]
+                    head += ["tQ_0"]
+                head += ["accept_ratio_q"]
+                head += ["tQ_1"]
+                tune_q_name = "%s/%s_q_windows.txt" % (path_dir, suff_out)
 
         wlog=csv.writer(logfile, delimiter='\t')
         wlog.writerow(head)
@@ -7873,7 +8027,15 @@ if __name__ == '__main__':
         if sp_specific_q_rates: #  or BDNNmodel in [2, 3]
             sp_q_marg_rate_file_name = "%s/%s_per_species_q_rates.log" % (path_dir, suff_out)
             head = ["iteration", "alpha"]
-            for i in taxa_names: head.append("%s_rel_q" % (i))
+            # for i in taxa_names: head.append("%s_rel_q" % (i))
+            if TPP_model == 1:
+                times_q_shift_log = times_q_shift + [0]
+                for i in taxa_names:
+                    for j in range(len(times_q_shift_log)):
+                        head.append("%s_%s" % (i, times_q_shift_log[j]))
+            else:
+                for i in taxa_names:
+                    head.append("%s" % i)
             sp_q_marg_rate_file = open(sp_q_marg_rate_file_name , "w", newline="")
             sp_q_marg=csv.writer(sp_q_marg_rate_file, delimiter='\t')
             sp_q_marg.writerow(head)
