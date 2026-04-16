@@ -1312,50 +1312,49 @@ def update_parameter_normal_vec(oldL, d, f=.25, par_mask=None, float_prec_f=np.f
     return p
 
 
+def update_multiplier(x, d, f):
+    """
+    Generic multiplier proposal:
+    - x: array to update
+    - d: tuning parameter
+    - f: probability of updating each element
+    """
+    S = np.shape(x)
+    ff = np.random.binomial(1, f, S)
+    if np.sum(ff) == 0:
+        ff[np.random.randint(S, size=1)] = 1
+
+    u = np.random.uniform(0, 1, S)
+    l = 2 * np.log(d)
+    m = np.exp(l * (u - 0.5))
+    m[ff == 0] = 1.0
+    new_x = x * m
+    U = np.sum(np.log(m))
+
+    return new_x, U
+
+
 def update_rates_multiplier(L,M,tot_L,mod_d3):
     if use_ADE_model == 0 and use_Death_model == 0:
         # UPDATE LAMBDA
-        S=np.shape(L)
-        #print L, S
-        ff=np.random.binomial(1,f_rate,S)
-        #print ff
-        d=1.2
-        u = np.random.uniform(0,1,S)
-        l = 2*log(mod_d3)
-        m = exp(l*(u-.5))
-        m[ff==0] = 1.
-        newL = L * m
-        U=sum(log(m))
-    else: U,newL = 0,L
+        newL, U = update_multiplier(L, mod_d3, f_rate)
+    else:
+        U, newL = 0, L
 
-    # UPDATE MU
     if use_Birth_model == 0:
-        S=np.shape(M)
-        ff=np.random.binomial(1,f_rate,S)
-        d=1.2
-        u = np.random.uniform(0,1,S) #*np.rint(np.random.uniform(0,f,S))
-        l = 2*log(mod_d3)
-        m = exp(l*(u-.5))
-        m[ff==0] = 1.
-        newM = M * m
-        U+=sum(log(m))
-    else: 
+        # UPDATE MU
+        newM, Umu = update_multiplier(M, mod_d3, f_rate)
+        U += Umu
+    else:
         newM = M
-    return newL,newM,U
 
-def update_q_multiplier(q,d=1.1,f=0.75):
-    S=np.shape(q)
-    ff=np.random.binomial(1,f,S)
-    # avoid no update being performed at all
-    if np.sum(ff) == 0:
-        ff[np.random.randint(S, size=1)] = 1
-    u = np.random.uniform(0,1,S)
-    l = 2*log(d)
-    m = exp(l*(u-.5))
-    m[ff==0] = 1.
-    new_q = q * m
-    U=sum(log(m))
-    return new_q,U
+    return newL, newM, U
+
+
+def update_q_multiplier(q, d=1.1, f=0.75):
+    new_q, U = update_multiplier(q, d, f)
+    return new_q, U
+
 
 def update_times(times, max_time,min_time, mod_d4,a,b):
     rS= times+zeros(len(times))
@@ -2451,22 +2450,22 @@ def init_trait_and_weights(trait_tbl, time_var_tbl_lambda, time_var_tbl_mu,
                                float_prec_f=float_prec_f, init_std=0.01, bias_node=n_bias_node)
     else:
         if fadlad:
-            trait_tbl_lam = 0+np.hstack((trait_tbl, (fadlad*FA).reshape((trait_tbl.shape[0],1)))) 
-            trait_tbl_mu =  0+np.hstack((trait_tbl, (fadlad*LO).reshape((trait_tbl.shape[0],1)))) 
+            trait_tbl_lam = 0+np.hstack((trait_tbl, (fadlad*FA).reshape((trait_tbl.shape[0],1))))
+            trait_tbl_mu =  0+np.hstack((trait_tbl, (fadlad*LO).reshape((trait_tbl.shape[0],1))))
             if verbose:
                 print(FA[0:10])
                 print(trait_tbl_lam[0:10])
                 print(trait_tbl_mu[0:10])
         else:
-            trait_tbl_lam = trait_tbl + 0 
-            trait_tbl_mu = trait_tbl + 0 
+            trait_tbl_lam = trait_tbl + 0
+            trait_tbl_mu = trait_tbl + 0
         w_lam = init_weight_prm(n_nodes=nodes, n_features=trait_tbl_lam.shape[1], size_output=1,
                                 float_prec_f=float_prec_f, init_std=0.01, bias_node=n_bias_node)
         w_mu = init_weight_prm(n_nodes=nodes, n_features=trait_tbl_mu.shape[1], size_output=1,
                                float_prec_f=float_prec_f, init_std=0.01, bias_node=n_bias_node)
         for i in w_lam:
             print(i.shape)
-    
+
     return [float_prec_f(trait_tbl_lam), float_prec_f(trait_tbl_mu)], [w_lam,w_mu]
 
 
@@ -2712,12 +2711,12 @@ def get_binned_time_variable(timebins, var_file, rescale, translate):
     var = var[var[:, 0] >= -translate, :]
     times = var[:, 0] * rescale + translate
     values = var[:, 1:]
-    
+
     # reorder var_file to ensure that the most recent is the first row
     reorder = np.argsort(times)
     times = times[reorder]
     values = values[reorder, :]
-    
+
     nbins = len(timebins)
     nvars = values.shape[1]
     mean_var = np.zeros((nbins - 1, nvars))
@@ -3073,10 +3072,10 @@ def add_taxon_age(ts, te, q_time_frames, trt_tbl, tsA=None, teA=None):
 
 
 def identify_me_victims(te, me_times, trt_tbl, idx):
-    num_me_events = me_times.shape[0]
-    num_taxa = trt_tbl.shape[-2]
+    old_victims = trt_tbl[..., idx] + 0
     trt_tbl[..., idx] = np.searchsorted(me_times, te) % 2
-    return trt_tbl
+    victims_changed = not np.allclose(old_victims, trt_tbl[..., idx])
+    return trt_tbl, victims_changed, old_victims
 
 
 def get_binned_div_traj(timebins, times, values):
@@ -4161,7 +4160,7 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
         try:
             q_rates_index = [head.index(i) for i in head if i.startswith('q_')]
             q_rates = tbl[last_row,q_rates_index]
-        except: 
+        except:
             q_rate = np.ones(2)
         try:
             alpha_pp = tbl[last_row,head.index("alpha")]
@@ -4171,17 +4170,18 @@ def get_init_values(mcmc_log_file, taxa_names, float_prec_f):
         ts = tbl[last_row,ts_index]
         te = tbl[last_row,te_index]
         if len(fixed_times_of_shift)>0: # fixShift
+            hyp = np.ones(2)
             try:
-                hyp_index = [head.index("hypL"), head.index("hypM")]
                 l_index = [head.index(i) for i in head if "lambda_" in i]
                 m_index = [head.index(i) for i in head if "mu_" in i]
                 lam = tbl[last_row,l_index]
                 mu  = tbl[last_row,m_index]
-                hyp = tbl[last_row,hyp_index]
+                if "hypL" in head:
+                    hyp_index = [head.index("hypL"), head.index("hypM")]
+                    hyp = tbl[last_row, hyp_index]
             except:
                 lam = np.array([float(len(ts))/sum(ts-te)      ])    # const rate ML estimator
                 mu  = np.array([float(len(te[te>0]))/sum(ts-te)])    # const rate ML estimator
-                hyp = np.ones(2)
         else:
             hyp = np.ones(2)
             if TDI == 4:
@@ -4418,20 +4418,24 @@ def MCMC(all_arg):
                 if not highres_q_repeats is None:
                     q_rates_tmp = q_ratesA[highres_q_repeats]
             if snn_me:
-                trait_tbl_NN[2] = identify_me_victims(teA, snn_me_times, trait_tbl_NN[2], snn_me_idx)
-            qbin_ts_te = None
+                trait_tbl_NN[2], snn_me_victims_changed, snn_me_victimsA = identify_me_victims(teA,
+                                                                                               snn_me_times,
+                                                                                               trait_tbl_NN[2],
+                                                                                               snn_me_idx)
+            qbin_ts_teA = None
             bdnn_q_ratesA = np.zeros(n_taxa)
             if occs_sp.ndim == 2:
                 bdnn_q_ratesA = np.zeros((n_taxa, len(q_time_frames_bdnn) - 1))
             if snn_timevar or bdnn_ads >= 0.0:
-                qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
+                qbin_ts_teA = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
             # singleton index to calculate preservation likelihood
             singleton_lik = copy_lib.deepcopy(singleton_mask)
             if singleton_lik.ndim == 2:
                 singleton_lik = singleton_lik[:, 0].reshape(-1)
             rnd_layer_q = -1
             qnn_output_unregA, nn_qA = get_unreg_rate_BDNN_3D(trait_tbl_NN[2], cov_parA[2], nn_qA, hidden_act_f, out_act_f_q)
-            q_multiA, denom_qA, norm_facA = get_q_multipliers_NN(cov_parA[5], qnn_output_unregA, singleton_mask, apply_reg_q, qbin_ts_te)
+            q_multiA, denom_qA, norm_facA = get_q_multipliers_NN(cov_parA[5], qnn_output_unregA, singleton_mask, apply_reg_q, qbin_ts_teA)
+            lik_fossilA = np.zeros(len(fossil))
             bdnn_prior_qA = np.sum([np.sum(prior_normal(cov_parA[2][i], prior_bdnn_w_q_sd[i])) for i in range(len(cov_parA[2]))])
             if prior_lam_t_reg[-1] > 0:
                 bdnn_prior_qA += np.log(prior_lam_t_reg[-1]) - prior_lam_t_reg[-1] * cov_parA[5]
@@ -4545,6 +4549,8 @@ def MCMC(all_arg):
             denom_q = denom_qA + 0.0
             norm_fac = norm_facA + 0.0
             nn_q = nn_qA
+            qbin_ts_te = np.copy(qbin_ts_teA)
+            lik_fossil = lik_fossilA + 0.0
         if BDNNmodel in [1, 3]:
             cov_par = copy_lib.deepcopy(cov_parA)
             bdnn_prior_cov_par = bdnn_prior_cov_parA + 0.0
@@ -4577,6 +4583,7 @@ def MCMC(all_arg):
         cov_lam_updated = 0
         cov_mu_updated = 0
         cov_q_updated = 0
+        snn_me_victims_changed = False
 
         if rr<f_update_se: # ts/te
             ts_te_updated = 1
@@ -4612,7 +4619,7 @@ def MCMC(all_arg):
                     lm_rates_temp = LA[np.digitize(q_temp_time, timesLA) - 1] + MA[np.digitize(q_temp_time, timesMA) - 1] + q_rates_temp
                     ts,te = gibbs_update_ts_te(lm_rates_temp,lm_rates_temp,times_q_temp,
                         bound_ts=bound_ts, bound_te=bound_te, tsA=tsA, teA=teA)
-                    
+
                     # if len(LA)==1:
                     #     q_rates_temp_L = q_rates_temp + LA[0] + MA[0]
                     # else:
@@ -4627,7 +4634,6 @@ def MCMC(all_arg):
                     #
                     # print("OLD", q_rates_temp_L)
                     # print("NEW", lm_rates_temp + q_rates_temp)
-                               
 
             if BDNNmodel:
                 if bdnn_dd:
@@ -4647,8 +4653,12 @@ def MCMC(all_arg):
                         trait_tbl_NN[2] = add_taxon_age(ts, te, q_time_frames_bdnn, trait_tbl_NN[2], tsA, teA)
                         rnd_layer_q = 0
                     if snn_me and not np.allclose(te, teA):
-                        trait_tbl_NN[2] = identify_me_victims(te, snn_me_times, trait_tbl_NN[2], snn_me_idx)
-                        rnd_layer_q = 0
+                        trait_tbl_NN[2], snn_me_victims_changed, snn_me_victimsA = identify_me_victims(te,
+                                                                                                       snn_me_times,
+                                                                                                       trait_tbl_NN[2],
+                                                                                                       snn_me_idx)
+                        if snn_me_victims_changed:
+                            rnd_layer_q = 0
 
             tot_L=np.sum(ts-te)
         
@@ -4706,8 +4716,8 @@ def MCMC(all_arg):
 
         elif rr<f_update_cov: # cov
             # Do not update weights for lam/mu and q at the same time
-            rr_bdnn = (np.random.random() - 0.5) * BDNNmodel in [3]
-            if BDNNmodel in [1, 3] and rr_bdnn <= 0.0:
+            rr_bdnn = np.random.random() * int(BDNNmodel in [2, 3])
+            if BDNNmodel in [1, 3] and rr_bdnn <= 0.5:
 #                cov_lam_updated = 1
 #                cov_mu_updated = 1
 #                rnd_layer = np.random.randint(0, len(cov_parA[0]))
@@ -4787,7 +4797,7 @@ def MCMC(all_arg):
                                                                       apply_reg, bias_node_idx, fix_edgeShift,
                                                                       rnd_layer_mu)
 
-            if BDNNmodel in [2, 3] and rr_bdnn >= 0.0:
+            elif BDNNmodel in [2, 3]:
                 cov_q_updated = 1
                 rnd_layer_q = -1
                 if prior_lam_t_reg[-1] > 0 and np.random.random() < 0.1:
@@ -4796,7 +4806,9 @@ def MCMC(all_arg):
                     rnd_layer_q = np.random.randint(0, len(cov_parA[2]))
                     # update layers q rate
                     cov_par[2][rnd_layer_q] = update_parameter_normal_vec(cov_parA[2][rnd_layer_q], d=0.05, f=bdnn_update_f[rnd_layer_q], float_prec_f=float_prec_f)
-
+                bdnn_prior_q = np.sum([np.sum(prior_normal(cov_par[2][i], prior_bdnn_w_q_sd[i])) for i in range(len(cov_par[2]))])
+                if prior_lam_t_reg[-1] > 0:
+                    bdnn_prior_q += np.log(prior_lam_t_reg[-1]) - prior_lam_t_reg[-1] * cov_par[5]
 
             if not BDNNmodel:
                 rcov=np.random.random()
@@ -4833,14 +4845,16 @@ def MCMC(all_arg):
         if fix_SE == 0 and FBDrange==0:
             ind1=list(range(0,len(fossil)))
             ind2=[]
-            if it>0 and rr<f_update_se and not snn_timevar: # recalculate likelihood only for ts, te that were updated
+            if it > 0 and ts_te_updated and not (snn_timevar or bdnn_ads > 0.0 or snn_me_victims_changed):
+                # recalculate likelihood only for ts, te that were updated
                 ind1=((ts-te != tsA-teA).nonzero()[0]).tolist()
                 ind2=(ts-te == tsA-teA).nonzero()[0]
-            lik_fossil=zeros(len(fossil))
 
             if len(ind1)>0 and it<stop_update and fix_SE == 0:
                 # generate args lik (ts, te)
                 if not BDNNmodel in [2, 3]:
+                    lik_fossil=zeros(len(fossil))
+
                     z=zeros(len(fossil)*7).reshape(len(fossil),7)
                     z[:,0]=te
                     z[:,1]=ts
@@ -4852,116 +4866,116 @@ def MCMC(all_arg):
                     if useDiscreteTraitModel == 1: z[:,6] = mean(M)
                     args=list(z[ind1])
 
-                if hasFoundPyRateC:
-                    if TPP_model == 1:
-                        # This uses the median for gamma rates
-                        YangGamma = [1]
-                        if argsG :
-                            YangGamma=get_gamma_rates(alpha_pp_gamma)
+                    if hasFoundPyRateC:
+                        if TPP_model == 1:
+                            # This uses the median for gamma rates
+                            YangGamma = [1]
+                            if argsG :
+                                YangGamma=get_gamma_rates(alpha_pp_gamma)
 
-                        lik_fossil = np.array(PyRateC_HPP_vec_lik(ind1, ts, te, q_time_frames, q_rates, YangGamma))
-                        # This uses the mean for gamma rates
-                        #lik_fossil2 = np.array(PyRateC_HPP_vec_lik(ind1, ts, te, q_time_frames, q_rates, pp_gamma_ncat, alpha_pp_gamma))
+                            lik_fossil = np.array(PyRateC_HPP_vec_lik(ind1, ts, te, q_time_frames, q_rates, YangGamma))
+                            # This uses the mean for gamma rates
+                            #lik_fossil2 = np.array(PyRateC_HPP_vec_lik(ind1, ts, te, q_time_frames, q_rates, pp_gamma_ncat, alpha_pp_gamma))
 
-                        # Check correctness of results by comparing with python version
-                        if sanityCheckForPyRateC == 1:
-                            lik_fossil2 = zeros(len(fossil))
-                            for j in range(len(ind1)):
-                                i=ind1[j] # which species' lik
-                                lik_fossil2[i] = HPP_vec_lik([te[i],ts[i],q_time_frames,q_rates,i,alpha_pp_gamma])
+                            # Check correctness of results by comparing with python version
+                            if sanityCheckForPyRateC == 1:
+                                lik_fossil2 = zeros(len(fossil))
+                                for j in range(len(ind1)):
+                                    i=ind1[j] # which species' lik
+                                    lik_fossil2[i] = HPP_vec_lik([te[i],ts[i],q_time_frames,q_rates,i,alpha_pp_gamma])
 
-                            absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
-                            if absDivergence > sanityCheckThreshold:
-                                print("[WARNING] HPP_vec_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
+                                absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
+                                if absDivergence > sanityCheckThreshold:
+                                    print("[WARNING] HPP_vec_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
 
-                    elif argsHPP == 1:
-                        YangGamma = [1]
-                        if argsG :
-                            YangGamma=get_gamma_rates(q_rates[0])
+                        elif argsHPP == 1:
+                            YangGamma = [1]
+                            if argsG :
+                                YangGamma=get_gamma_rates(q_rates[0])
 
-                        lik_fossil = np.array(PyRateC_HOMPP_lik(ind1, ts, te, q_rates[1], YangGamma, cov_par[2], M[len(M)-1]))
-                        
-                        # Check correctness of results by comparing with python version
-                        if sanityCheckForPyRateC == 1:
-                            lik_fossil2 = zeros(len(fossil))
-                            for j in range(len(ind1)):
-                                i=ind1[j] # which species' lik
-                                lik_fossil2[i] = HOMPP_lik(args[j])
+                            lik_fossil = np.array(PyRateC_HOMPP_lik(ind1, ts, te, q_rates[1], YangGamma, cov_par[2], M[len(M)-1]))
 
-                            absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
-                            if absDivergence > sanityCheckThreshold:
-                                print("[WARNING] PyRateC_HOMPP_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
+                            # Check correctness of results by comparing with python version
+                            if sanityCheckForPyRateC == 1:
+                                lik_fossil2 = zeros(len(fossil))
+                                for j in range(len(ind1)):
+                                    i=ind1[j] # which species' lik
+                                    lik_fossil2[i] = HOMPP_lik(args[j])
+
+                                absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
+                                if absDivergence > sanityCheckThreshold:
+                                    print("[WARNING] PyRateC_HOMPP_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
+
+                        else:
+                            YangGamma = [1]
+                            if argsG :
+                                YangGamma=get_gamma_rates(q_rates[0])
+                            lik_fossil = np.array(PyRateC_NHPP_lik(use_DA==1, ind1, ts, te, q_rates[1], YangGamma, cov_par[2], M[len(M)-1]))
+
+                            # Check correctness of results by comparing with python version
+                            if sanityCheckForPyRateC == 1:
+                                lik_fossil2 = zeros(len(fossil))
+                                for j in range(len(ind1)):
+                                    i=ind1[j] # which species' lik
+                                    if argsG == 1: lik_fossil2[i] = NHPPgamma(args[j])
+                                    else: lik_fossil2[i] = NHPP_lik(args[j])
+
+                                absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
+                                if absDivergence > sanityCheckThreshold:
+                                    print("[WARNING] PyRateC_NHPP_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
 
                     else:
-                        YangGamma = [1]
-                        if argsG :
-                            YangGamma=get_gamma_rates(q_rates[0])
-                        lik_fossil = np.array(PyRateC_NHPP_lik(use_DA==1, ind1, ts, te, q_rates[1], YangGamma, cov_par[2], M[len(M)-1]))
-
-                        # Check correctness of results by comparing with python version
-                        if sanityCheckForPyRateC == 1:
-                            lik_fossil2 = zeros(len(fossil))
-                            for j in range(len(ind1)):
-                                i=ind1[j] # which species' lik
-                                if argsG == 1: lik_fossil2[i] = NHPPgamma(args[j])
-                                else: lik_fossil2[i] = NHPP_lik(args[j])
-
-                            absDivergence = abs(np.sum(lik_fossil2) - np.sum(lik_fossil))
-                            if absDivergence > sanityCheckThreshold:
-                                print("[WARNING] PyRateC_NHPP_lik diverged for more than ", sanityCheckThreshold, " (", absDivergence, ")")
-
-                else:
-                    if num_processes_ts==0:
-                        if BDNNmodel in [2, 3]:
-                            if it > 0 and (rr == 1.5 or updated_lam_mu):
-                                # RJMCMC move for lam/mu or last mcmc iteration
-                                lik_fossil = lik_fossilA + 0.0
-                            else:
-                                q_rates_tmp = q_rates
-                                if not highres_q_repeats is None:
-                                    q_rates_tmp = q_rates[highres_q_repeats]
-                                if (snn_timevar or bdnn_ads > 0.0 or (snn_me and not np.allclose(te, teA))) and ts_te_updated:
-                                    qbin_ts_te = get_bin_ts_te(ts, te, q_time_frames_bdnn)
-                                if cov_q_updated or (ts_te_updated and bdnn_ads > 0.0) or (snn_me and not np.allclose(te, teA)):
-                                    qnn_output_unreg, nn_q = get_unreg_rate_BDNN_3D(trait_tbl_NN[2], cov_par[2], nn_qA,
-                                                                                    hidden_act_f, out_act_f_q, rnd_layer=rnd_layer_q)
-                                q_multi, denom_q, norm_fac = get_q_multipliers_NN(cov_par[5], qnn_output_unreg, singleton_mask, apply_reg_q, qbin_ts_te)
-                                bdnn_prior_q = np.sum([np.sum(prior_normal(cov_par[2][i], prior_bdnn_w_q_sd[i])) for i in range(len(cov_par[2]))])
-                                if cov_q_updated and prior_lam_t_reg[-1] > 0:
-                                    bdnn_prior_q += np.log(prior_lam_t_reg[-1]) - prior_lam_t_reg[-1] * cov_par[5]
-
-                            if use_HPP_NN_lik:
-                                lik_fossil[ind1], bdnn_q_rates[ind1, :], _ = HPP_NN_lik([ts[ind1], te[ind1],
-                                                                                            q_rates_tmp, alpha_pp_gamma,
-                                                                                            q_multi[ind1], const_q,
-                                                                                            occs_sp[ind1, :], log_factorial_occs[ind1],
-                                                                                            q_time_frames_bdnn, duration_q_bins[ind1, :],
-                                                                                            occs_single_bin[ind1], singleton_lik[ind1],
-                                                                                            argsG, pp_gamma_ncat, YangGammaQuant])
-                            else:
-                                lik_fossil[ind1], bdnn_q_rates[ind1], _ = HOMPP_NN_lik([ts[ind1], te[ind1],
-                                                                                        q_rates_tmp,
-                                                                                        q_multi[ind1], const_q,
-                                                                                        occs_sp[ind1], log_factorial_occs[ind1],
-                                                                                        singleton_lik[ind1],
-                                                                                        argsG, pp_gamma_ncat, YangGammaQuant])
-                        else:
+                        if num_processes_ts==0:
                             for j in range(len(ind1)):
                                 i=ind1[j] # which species' lik
                                 if TPP_model == 1:
                                     lik_fossil[i] = HPP_vec_lik([te[i],ts[i],q_time_frames,q_rates,i,alpha_pp_gamma])
                                 else:
-                                    if argsHPP == 1 or  frac1==0: 
+                                    if argsHPP == 1 or  frac1==0:
                                         lik_fossil[i] = HOMPP_lik(args[j])
                                     elif argsG == 1:
                                         lik_fossil[i] = NHPPgamma(args[j])
                                     else:
                                         lik_fossil[i] = NHPP_lik(args[j])
+                        else:
+                            if TPP_model == 1: sys.exit("TPP_model model can only run on a single processor")
+                            if argsHPP == 1 or  frac1==0: lik_fossil[ind1] = array(pool_ts.map(HOMPP_lik, args))
+                            elif argsG == 1: lik_fossil[ind1] = array(pool_ts.map(NHPPgamma, args))
+                            else: lik_fossil[ind1] = array(pool_ts.map(NHPP_lik, args))
+
+                elif (BDNNmodel in [2, 3] and not (rr == 1.5 or updated_lam_mu or cov_lam_updated or cov_mu_updated)) or it == 0:
+                    q_rates_tmp = q_rates
+                    if not highres_q_repeats is None:
+                        q_rates_tmp = q_rates[highres_q_repeats]
+
+                    update_qbin_ts_te = (snn_timevar or bdnn_ads > 0.0) and ts_te_updated
+                    if update_qbin_ts_te:
+                        qbin_ts_te = get_bin_ts_te(ts, te, q_time_frames_bdnn)
+
+                    update_snn = (cov_q_updated and rnd_layer_q > -1) or (ts_te_updated and bdnn_ads > 0.0) or snn_me_victims_changed
+                    if update_snn:
+                        qnn_output_unreg, nn_q = get_unreg_rate_BDNN_3D(trait_tbl_NN[2], cov_par[2], nn_qA,
+                                                                        hidden_act_f, out_act_f_q, rnd_layer=rnd_layer_q)
+
+                    if update_qbin_ts_te or update_snn or (cov_q_updated and rnd_layer_q == -1):
+                        q_multi, denom_q, norm_fac = get_q_multipliers_NN(cov_par[5], qnn_output_unreg,
+                                                                          singleton_mask, apply_reg_q, qbin_ts_te)
+
+                    if use_HPP_NN_lik:
+                        lik_fossil[ind1], bdnn_q_rates[ind1, :], _ = HPP_NN_lik([ts[ind1], te[ind1],
+                                                                                 q_rates_tmp, alpha_pp_gamma,
+                                                                                 q_multi[ind1], const_q,
+                                                                                 occs_sp[ind1, :], log_factorial_occs[ind1],
+                                                                                 q_time_frames_bdnn, duration_q_bins[ind1, :],
+                                                                                 occs_single_bin[ind1], singleton_lik[ind1],
+                                                                                 argsG, pp_gamma_ncat, YangGammaQuant])
                     else:
-                        if TPP_model == 1: sys.exit("TPP_model model can only run on a single processor")
-                        if argsHPP == 1 or  frac1==0: lik_fossil[ind1] = array(pool_ts.map(HOMPP_lik, args))
-                        elif argsG == 1: lik_fossil[ind1] = array(pool_ts.map(NHPPgamma, args))
-                        else: lik_fossil[ind1] = array(pool_ts.map(NHPP_lik, args))
+                        lik_fossil[ind1], bdnn_q_rates[ind1], _ = HOMPP_NN_lik([ts[ind1], te[ind1],
+                                                                                q_rates_tmp,
+                                                                                q_multi[ind1], const_q,
+                                                                                occs_sp[ind1], log_factorial_occs[ind1],
+                                                                                singleton_lik[ind1],
+                                                                                argsG, pp_gamma_ncat, YangGammaQuant])
 
             if it>0:
                 lik_fossil[ind2] = lik_fossilA[ind2]
@@ -5401,18 +5415,6 @@ def MCMC(all_arg):
         if Post>-inf and Post<inf:
             r_acc = log(np.random.random())
             is_accepted = Post*tempMC3-PostA*tempMC3 + hasting >= r_acc or stop_update==inf and TDI in [2,3,4] or accept_it==1
-
-            # if updated_lam_mu:
-            #     print('accepted', is_accepted)
-            #     if (len(L) == len(LA)):
-            #         if np.any((L - LA).nonzero()[0]):
-            #             print('L', L)
-            #             print('LA', LA)
-            #     if len(M) == len(MA):
-            #         if np.any((M - MA).nonzero()[0]):
-            #             print('M', M)
-            #             print('MA', MA)
-
             if is_accepted:
                 likBDtempA=likBDtemp
                 PostA=Post
@@ -5456,6 +5458,8 @@ def MCMC(all_arg):
                     norm_facA = norm_fac
                     bdnn_prior_qA = bdnn_prior_q
                     nn_qA = nn_q
+                    if snn_timevar or bdnn_ads >= 0.0:
+                        qbin_ts_teA = qbin_ts_te
                 if ts_te_updated and tune_T_schedule[0] > 0:
                     d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, FA, LO, bound_ts, bound_te, tste_tune_obj, it,
                                                                     tune_T_schedule, ind_updated_tste, ts_or_te_updated,
@@ -5482,9 +5486,10 @@ def MCMC(all_arg):
                 if BDNNmodel in [2, 3]:
                     if bdnn_ads >= 0.0 and ts_te_updated:
                         trait_tbl_NN[2] = add_taxon_age(tsA, teA, q_time_frames_bdnn, trait_tbl_NN[2], ts, te)
+                    if snn_me_victims_changed:
+                        trait_tbl_NN[2][..., snn_me_idx] = snn_me_victimsA
                     nn_q = nn_qA
-#                    if trait_tbl_NN[2].ndim == 3 and ts_te_updated == 1:
-#                        qbin_ts_te = get_bin_ts_te(tsA, teA, q_time_frames_bdnn)
+
             if not is_accepted:
                 if ts_te_updated and tune_T_schedule[0] > 0:
                     d1_ts, d1_te, tste_tune_obj = tune_tste_windows(d1_ts, d1_te, FA, LO, bound_ts, bound_te, tste_tune_obj, it,
@@ -6971,6 +6976,8 @@ if __name__ == '__main__':
 
     if len(fixed_times_of_shift)>0:
         fixed_times_of_shift=fixed_times_of_shift[fixed_times_of_shift<np.max(FA)]
+        if args.fixShift != '':
+            fixed_times_of_shift = fixed_times_of_shift[fixed_times_of_shift > np.min(LO)]
         # fixed number of dpp bins
         if args.dpp_nB>0:
             t_bin_set = np.linspace(0,np.max(FA),args.dpp_nB+1)[::-1]
