@@ -585,13 +585,13 @@ def plot_bdnn_rtt(output_wd, r_file, pdf_file, r_sp_sum, r_ex_sum, r_div_sum, lo
         newfile = open(out, "w")
         n_rows = 0
         n_elements = 0
-        if not r_sp_sum is None:
+        if has_div_rates:
             n_rows += 2
             n_elements += 4
-        if not r_q_sum is None:
+        if has_q_rates:
             n_rows += 1
             n_elements += 1
-            if not r_sp_sum is None:
+            if has_div_rates:
                 n_elements += 1
         if platform.system() == "Windows" or platform.system() == "Microsoft":
             wd_forward = os.path.abspath(output_wd).replace('\\', '/')
@@ -600,6 +600,7 @@ def plot_bdnn_rtt(output_wd, r_file, pdf_file, r_sp_sum, r_ex_sum, r_div_sum, lo
             r_script = "pdf(file='%s/%s', width = 9, height = %s, useDingbats = FALSE)\n" % (output_wd, pdf_file, 3 * n_rows)
         r_script += "\nlayout(matrix(1:%s, ncol = 2, nrow = %s, byrow = TRUE))" % (n_elements, n_rows)
         r_script += "\npar(las = 1, mar = c(4.5, 4.5, 0.5, 0.5))"
+
         if has_div_rates:
             net_div_greater0 = not np.any(r_div_sum < 0)
             if logT == 1:
@@ -708,7 +709,9 @@ def plot_bdnn_rtt(output_wd, r_file, pdf_file, r_sp_sum, r_ex_sum, r_div_sum, lo
             r_script += "\naxis(side = 2, at = yaxt, label = yaxt_label)"
             r_script += "\npolygon(c(time_vec[not_NA], rev(time_vec[not_NA])), c(long_lwr[not_NA], rev(long_upr[not_NA])), col = adjustcolor('black', alpha = 0.3), border = NA)"
             r_script += "\nlines(time_vec[not_NA], long_mean[not_NA], col = 'black', lwd = 2)"
-        if not r_q_sum is None:
+
+        y_lim_q = [0, 0]
+        if has_q_rates:
             if logT == 1:
                 r_q_sum = np.log(r_q_sum)
             elif logT == 2:
@@ -720,14 +723,15 @@ def plot_bdnn_rtt(output_wd, r_file, pdf_file, r_sp_sum, r_ex_sum, r_div_sum, lo
             r_script += util.print_R_vec('\nq_upr', r_q_sum[:, 2])
             r_script += "\nxlim = c(%s, %s)" % (np.max(time_vec_q), np.min(time_vec_q))
             if y_max_q is None:
-                r_script += "\nylim = c(%s, %s)" % (np.nanmin(r_q_sum), np.nanmax(r_q_sum))
+                y_lim_q = [np.nanmin(r_q_sum), np.nanmax(r_q_sum)]
             elif logT == 1:
-                r_script += "\nylim = c(%s, %s)" % (np.nanmin(r_q_sum), np.log(y_max_q))
+                y_lim_q = [np.nanmin(r_q_sum), np.log(y_max_q)]
             elif logT == 2:
-                r_script += "\nylim = c(%s, %s)" % (np.nanmin(r_q_sum), np.log10(y_max_q))
+                y_lim_q = [np.nanmin(r_q_sum), np.log10(y_max_q)]
             else:
                 # as in rtt_plot_bds.RTTplot_Q
-                r_script += "\nylim = c(0, %s)" % y_max_q
+                y_lim_q = [0, y_max_q]
+            r_script += "\nylim = c(%s, %s)" % tuple(y_lim_q)
             r_script += "\nnot_NA = !is.na(q_mean)"
             r_script += "\nplot(time_vec_q[not_NA], q_mean[not_NA], type = 'n', xlim = xlim, ylim = ylim, xlab = 'Time (Ma)', ylab = 'Sampling rate', yaxt = 'n')"
             r_script += "\nyaxt_label <- pretty(par('usr')[3:4])"
@@ -758,7 +762,13 @@ def plot_bdnn_rtt(output_wd, r_file, pdf_file, r_sp_sum, r_ex_sum, r_div_sum, lo
             print("cmd", cmd)
             os.system(cmd)
         else:
-            return r_script, newfile
+            if logT == 1:
+                y_lim_q[0] = np.exp(y_lim_q[0])
+                y_lim_q[1] = np.exp(y_lim_q[1])
+            elif logT == 2:
+                y_lim_q[0] = 10**y_lim_q[0]
+                y_lim_q[1] = 10**y_lim_q[1]
+            return r_script, newfile, y_lim_q
 
 
 def get_rtt_summary(lam_it, mu_it, gs, times_of_shift, FA, ts, te, num_it, num_bins, translate):
@@ -852,9 +862,9 @@ def plot_rtt(path_dir_log_files, burn, thin=0, translate=0, min_age=0, max_age=0
         max_age2 = times_edgeShifts[0] - translate
     if fix_edgeShift in [1, 3] and min_age == 0.0: # both or min boundary
         min_age2 = times_edgeShifts[-1] - translate + 0.0001 * (times_edgeShifts[-1] - translate)
-    r_script, newfile = plot_bdnn_rtt(output_wd, r_file, pdf_file, sptt, extt, divtt, longtt, time_vec, qtt, time_vec_q,
-                                      min_age=min_age2, max_age=max_age2, translate=translate, y_max_q=y_max_q,
-                                      logT=logT, q_shift_file=q_shift_file, rscript_to_pdf=False)
+    r_script, newfile, y_lim_q = plot_bdnn_rtt(output_wd, r_file, pdf_file, sptt, extt, divtt, longtt, time_vec, qtt, time_vec_q,
+                                               min_age=min_age2, max_age=max_age2, translate=translate, y_max_q=y_max_q,
+                                               logT=logT, q_shift_file=q_shift_file, rscript_to_pdf=False)
 
     # if not r_script is None:
         # baseline sampling rate through time
@@ -866,6 +876,8 @@ def plot_rtt(path_dir_log_files, burn, thin=0, translate=0, min_age=0, max_age=0
         #     max_age2 = times_edgeShifts[0]
         # if fix_edgeShift in [1, 3] and min_age == 0.0: # both or min boundary
         #     min_age2 = times_edgeShifts[-1]
+        y_min_q = np.minimum(y_min_q, y_lim_q[0])
+        y_max_q = np.maximum(y_min_q, y_lim_q[1])
         if not q_shift_file == "":
             from pyrate_lib.rtt_plot_bds import RTTplot_Q
             r_script = RTTplot_Q(path_dir_log_files + "_mcmc.log", q_shift_file, burnin=burn,
@@ -1195,7 +1207,8 @@ def get_q_rates_and_multipliers(bdnn_obj, w_q, ts, te, ts_max, t_reg_q, reg_deno
     return q_rates, q_multi, np.mean(alpha), q_bins
 
 
-def make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names, q_shift="", alpha=1, suffix_pdf="taxon_q_multi", logT=0, q_hpd=None):
+def make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names, q_shift="", alpha=1,
+                       suffix_pdf="taxon_q_multi", logT=0, q_hpd=None, fossils=None):
     mid_colorramp = 1
     if logT == 1:
         q_multi = np.log(q_multi)
@@ -1231,6 +1244,11 @@ def make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names, q_shif
     r_script += "\nq_list = vector(mode = 'list', length = %s)" % n_taxa
     for i in range(n_taxa):
         r_script += util.print_R_vec("\nq_list[[%s]]", q_multi[i, :]) % (i + 1)
+    if not fossils is None:
+        r_script += "\n"
+        r_script += "\nfossils = vector(mode = 'list', length = %s)" % n_taxa
+        for i in range(len(fossils)):
+            r_script += util.print_R_vec("\nfossils[[%s]]", fossils[i]) % (i + 1)
     r_script += "\n"
     r_script += "\ntaxon_names = rep(NA_character_, length = %s)" % n_taxa
     for i in range(n_taxa):
@@ -1258,6 +1276,9 @@ def make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names, q_shif
     r_script += "\n         ybottom = i - 0.4, ytop = i + 0.4,"
     r_script += "\n         border = NA, col = col_i[j])"
     r_script += "\n  }"
+    if not fossils is None:
+        r_script += "\n  points(x = fossils[[i]], y = rep(i, length(fossils[[i]])),"
+        r_script += "\n         pch = 4, cex = 0.5, lwd = 0.5, col = adjustcolor('black', alpha = 0.5))"
     r_script += "\n  text(x = q_times_i[1] + a, y = i, labels = taxon_names[i], cex = 0.3, adj = 1)"
     r_script += "\n}"
     r_script += "\n"
@@ -1439,7 +1460,8 @@ def read_q_shift(q_shift_file, max_age=np.inf, min_age=0.0, translate=0.0):
 
 
 def plot_taxon_q_through_time(path_dir_log_files, burnin, thin=0, baseline_q=None, bdnn_precision=0,
-                              min_age=0, max_age=0, translate=0, order_by_ts=True, logT=0, calcHPD=True, q_shift_file=""):
+                              min_age=0, max_age=0, translate=0, order_by_ts=True, logT=0, calcHPD=True,
+                              q_shift_file="", plot_fossils=False):
     pkl_file = path_dir_log_files + ".pkl"
     mcmc_file = path_dir_log_files + "_mcmc.log"
     bdnn_obj, _, _, w_q, sp_fad_lad, ts, te, _, _, t_reg_q, _, _, reg_denom_q, norm_q, alpha, replicates_q = bdnn_parse_results(mcmc_file, pkl_file, burnin, thin)
@@ -1523,7 +1545,23 @@ def plot_taxon_q_through_time(path_dir_log_files, burnin, thin=0, baseline_q=Non
                                            min_age, max_age, translate, ts_mean[ord], te_mean[ord])
         q_multi_hpd = np.stack((q_multi_lwr, q_multi_upr))
 
-    make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names_1, q_shift, alpha, suffix_pdf="taxon_q_multi", q_hpd=q_multi_hpd)
+    fossils = None
+    if plot_fossils:
+        occ_data = bdnn_obj.occ_data
+        if order_by_ts:
+            occ_data = [occ_data[i] for i in ord]
+        fossils = []
+        for i in range(n_taxa):
+            fossils_tmp = occ_data[i] - translate
+            if min_age != 0:
+                fossils_tmp = fossils_tmp[fossils_tmp > min_age]
+            if max_age != 0:
+                fossils_tmp = fossils_tmp[fossils_tmp < max_age]
+            if len(fossils_tmp) > 0:
+                fossils.append(fossils_tmp)
+
+    make_taxon_qtt_pdf(path_dir_log_files, q_multi, q_times, taxon_names_1, q_shift, alpha,
+                       suffix_pdf="taxon_q_multi", q_hpd=q_multi_hpd, fossils=fossils)
 
     # taxon-time specific q rates
     if q_rates.shape[-1] < num_q_bins or num_q_bins < 99:
@@ -1558,7 +1596,8 @@ def plot_taxon_q_through_time(path_dir_log_files, burnin, thin=0, baseline_q=Non
                                                    min_age, max_age, translate, ts_mean[ord], te_mean[ord])
         q_rates_hpd = np.stack((q_rates_lwr, q_rates_upr))
 
-    make_taxon_qtt_pdf(path_dir_log_files, q_rates, q_times, taxon_names_2, q_shift, suffix_pdf="taxon_q", logT=logT, q_hpd=q_rates_hpd)
+    make_taxon_qtt_pdf(path_dir_log_files, q_rates, q_times, taxon_names_2, q_shift,
+                       suffix_pdf="taxon_q", logT=logT, q_hpd=q_rates_hpd, fossils=fossils)
 
 
 def get_qtt_baseline(sp_fad_lad, path_dir_log_files, burn, q_shift_file, qtt, time_vec_q, min_age, max_age, translate):
@@ -4901,7 +4940,8 @@ def take_traits_from_trt_tbl(trait_tbl, cond_trait_tbl, j, idx_comb_feat):
 
 
 def get_pdp_rate_it_i(arg):
-    [post_w_i, post_t_reg_i, post_denom_i, baseline, norm, trait_tbl, cond_trait_tbl, idx_comb_feat, out_act_f, hidden_act_f, bias_node_idx] = arg
+    [post_w_i, post_t_reg_i, post_denom_i, baseline, norm, trait_tbl, cond_trait_tbl, idx_comb_feat,
+     out_act_f, hidden_act_f, bias_node_idx, use_harmonic_mean] = arg
     nrows_cond_trait_tbl = len(cond_trait_tbl)
     rate_it_i = np.zeros(nrows_cond_trait_tbl)
     rate_it_i[:] = np.nan
@@ -4917,7 +4957,10 @@ def get_pdp_rate_it_i(arg):
                                                   bias_node_idx=bias_node_idx)
             rate_BDNN = norm * (rate_BDNN ** post_t_reg_i / post_denom_i) # either b/d rates or multiplier for q
             rate_BDNN = baseline * rate_BDNN
-            rate_it_i[j] = 1.0 / np.mean(1.0 / rate_BDNN) #np.mean(rate_BDNN)
+            if use_harmonic_mean:
+                rate_it_i[j] = 1.0 / np.mean(1.0 / rate_BDNN)
+            else:
+                rate_it_i[j] = np.mean(rate_BDNN)
     return rate_it_i
 
 
@@ -4944,6 +4987,7 @@ def get_partial_dependence_rates(bdnn_obj, cond_trait_tbl, post_w, post_t_reg, p
         out_act_f = bdnn_obj.bdnn_settings['out_act_f']
     hidden_act_f = bdnn_obj.bdnn_settings['hidden_act_f']
     bins_within_edges, bias_node_idx, fix_edgeShift, times_edgeShifts = get_edgeShifts_obj(bdnn_obj, min_age, max_age, translate, rate_type)
+    use_harmonic_mean = rate_type != 'sampling'
 
     args = []
     for i in range(num_it):
@@ -4976,8 +5020,9 @@ def get_partial_dependence_rates(bdnn_obj, cond_trait_tbl, post_w, post_t_reg, p
             trait_tbl_a = get_shap_trt_tbl(te, bdnn_time, trait_tbl_a, float_prec_f)
             baseline_i, norm_i = np.ones(1), np.ones(1)
         a = [post_w[i], post_t_reg[i], post_denom[i], baseline_i, norm_i,
-             trait_tbl_a, cond_trait_tbl, idx_comb_feat, out_act_f, hidden_act_f, bias_node_idx]
+             trait_tbl_a, cond_trait_tbl, idx_comb_feat, out_act_f, hidden_act_f, bias_node_idx, use_harmonic_mean]
         args.append(a)
+
     if num_processes > 1:
         pool_pdp = get_context('spawn').Pool(num_processes)
         rate_pdp = list(tqdm(pool_pdp.imap_unordered(get_pdp_rate_it_i, args),
@@ -4988,6 +5033,14 @@ def get_partial_dependence_rates(bdnn_obj, cond_trait_tbl, post_w, post_t_reg, p
         for i in tqdm(range(num_it), disable = show_progressbar == False):
             rate_pdp.append(get_pdp_rate_it_i(args[i]))
     rate_pdp = np.stack(rate_pdp, axis = 1)
+
+    # Normalize to a mean q-multiplier equal to 1
+    if rate_type == 'sampling':
+        plot_idx = np.unique(cond_trait_tbl[:, -3])
+        for i in plot_idx:
+            idx = cond_trait_tbl[:, -3] == i
+            rate_pdp[idx, :] /= np.nanmean(rate_pdp[idx, :], axis=0)
+
     return rate_pdp
 
 
@@ -5034,7 +5087,8 @@ def build_all_combinations(list):
 
 
 def get_pdp_rate_it_i_free_combination(arg):
-    [post_w_i, t_reg_i, denom_reg_i, trait_tbl, all_comb_tbl, names_comb_idx_conc, out_act_f, hidden_act_f, bias_node_idx] = arg
+    [post_w_i, t_reg_i, denom_reg_i, trait_tbl, all_comb_tbl, names_comb_idx_conc, out_act_f, hidden_act_f,
+     bias_node_idx, use_harmonic_mean] = arg
     nrows_all_comb_tbl = len(all_comb_tbl)
     rate_it_i = np.zeros(nrows_all_comb_tbl)
     rate_it_i[:] = np.nan
@@ -5048,7 +5102,10 @@ def get_pdp_rate_it_i_free_combination(arg):
                                               out_act_f,
                                               bias_node_idx=bias_node_idx)
         rate_BDNN = rate_BDNN ** t_reg_i / denom_reg_i
-        rate_it_i[j] = 1.0 / np.mean(1.0/rate_BDNN)
+        if use_harmonic_mean:
+            rate_it_i[j] = 1.0 / np.mean(1.0 / rate_BDNN)
+        else:
+            rate_it_i[j] = np.mean(rate_BDNN)
     return rate_it_i
 
 
@@ -5151,6 +5208,8 @@ def get_pdp_rate_free_combination(bdnn_obj,
     hidden_act_f = bdnn_obj.bdnn_settings['hidden_act_f']
     num_it = len(w_post)
     trait_tbl_for_mean = np.full((num_it, trait_tbl.shape[-2], len(names_comb_idx_conc)), np.nan)
+    use_harmonic_mean = rate_type != 'sampling'
+
     args = []
     for i in range(num_it):
         trait_tbl_a = trait_tbl + 0.0
@@ -5163,7 +5222,8 @@ def get_pdp_rate_free_combination(bdnn_obj,
             te, trait_tbl_a, bdnn_time, taxon_incl = trim_by_edges(te, trait_tbl_a, bdnn_time, fix_edgeShift, bins_within_edges, times_edgeShifts)
             trait_tbl_a = get_shap_trt_tbl(te, bdnn_time, trait_tbl_a, float_prec_f)
         trait_tbl_for_mean[i, taxon_incl, :] = trait_tbl_a[:, names_comb_idx_conc]
-        a = [w_post[i], t_reg_post[i], denom_reg_post[i], trait_tbl_a, all_comb_tbl, names_comb_idx_conc, out_act_f, hidden_act_f, bias_node_idx]
+        a = [w_post[i], t_reg_post[i], denom_reg_post[i], trait_tbl_a, all_comb_tbl, names_comb_idx_conc,
+             out_act_f, hidden_act_f, bias_node_idx, use_harmonic_mean]
         args.append(a)
 
     with warnings.catch_warnings():
@@ -5183,6 +5243,9 @@ def get_pdp_rate_free_combination(bdnn_obj,
         for i in tqdm(range(num_it), disable = show_progressbar == False):
             rate_pdp.append(get_pdp_rate_it_i_free_combination(args[i]))
     rate_pdp = np.stack(rate_pdp, axis = 1)
+    # Normalize to a mean q-multiplier equal to 1
+    if rate_type == "sampling":
+        rate_pdp /= np.nanmean(rate_pdp, axis=0)
     rate_pdp_sum = get_rates_summary(rate_pdp)
     rate_pdp_sum_df = pd.DataFrame(rate_pdp_sum, columns = ['mean', 'lwr', 'upr'])
     names_features = names_features[names_comb_idx_conc]
