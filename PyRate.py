@@ -4436,7 +4436,7 @@ def MCMC(all_arg):
             qnn_output_unregA, nn_qA = get_unreg_rate_BDNN_3D(trait_tbl_NN[2], cov_parA[2], nn_qA, hidden_act_f, out_act_f_q)
             q_multiA, denom_qA, norm_facA = get_q_multipliers_NN(cov_parA[5], qnn_output_unregA, singleton_mask, apply_reg_q, qbin_ts_teA)
             lik_fossilA = np.zeros(len(fossil))
-            bdnn_prior_qA = np.sum([np.sum(prior_normal(cov_parA[2][i], prior_bdnn_w_q_sd[i])) for i in range(len(cov_parA[2]))])
+            bdnn_prior_qA = np.sum([np.sum(prior_normal(cov_parA[2][i], prior_snn_w_sd[i])) for i in range(len(cov_parA[2]))])
             if prior_lam_t_reg[-1] > 0:
                 bdnn_prior_qA += np.log(prior_lam_t_reg[-1]) - prior_lam_t_reg[-1] * cov_parA[5]
 
@@ -4806,7 +4806,7 @@ def MCMC(all_arg):
                     rnd_layer_q = np.random.randint(0, len(cov_parA[2]))
                     # update layers q rate
                     cov_par[2][rnd_layer_q] = update_parameter_normal_vec(cov_parA[2][rnd_layer_q], d=0.05, f=bdnn_update_f[rnd_layer_q], float_prec_f=float_prec_f)
-                bdnn_prior_q = np.sum([np.sum(prior_normal(cov_par[2][i], prior_bdnn_w_q_sd[i])) for i in range(len(cov_par[2]))])
+                bdnn_prior_q = np.sum([np.sum(prior_normal(cov_par[2][i], prior_snn_w_sd[i])) for i in range(len(cov_par[2]))])
                 if prior_lam_t_reg[-1] > 0:
                     bdnn_prior_q += np.log(prior_lam_t_reg[-1]) - prior_lam_t_reg[-1] * cov_par[5]
 
@@ -6010,7 +6010,7 @@ if __name__ == '__main__':
     p.add_argument('-BDNNoutputfun', type=int, help='Activation function output layer: 0) abs, 1) softPlus, 2) exp, 3) relu 4) sigmoid 5) sigmoid_rate', default=1, metavar=1)
     p.add_argument('-BDNNactfun', type=int, help='Activation function hidden layer(s): 0) tanh, 1) relu, 2) leaky_relu, 3) swish, 4) sigmoid, 5) fast approximation tanh', default=5, metavar=0)
     p.add_argument('-BDNNprecision', type=int, help='Floating point precision for network nodes: 0) double 64, 1) single 32', default=1, metavar=1)
-    p.add_argument('-BDNNprior', type=float, help='sd normal prior', default=1, metavar=1)
+    p.add_argument('-BDNNprior', type=float, help='sd normal prior (one value or hidden layers + 1)', default=[1.0], metavar=[1.0], nargs='+')
     p.add_argument('-BDNNreg', type=float, help='regularization prior (-1.0 to turn off regularization, provide two values for independent regularization of lam and mu)', default=[1.0], metavar=[1.0], nargs='+')
     p.add_argument('-BDNNblockmodel',help='Block NN model', action='store_true', default=False)
     p.add_argument('-BDNNactivate_all',help='Activate all hidden layers even if weights were not updated; increases run time', action='store_true', default=False)
@@ -6022,6 +6022,7 @@ if __name__ == '__main__':
     p.add_argument('-BDNNpath_taxon_time_tables', type=str, help='Path to director(y|ies) with table(s) of taxon-time specific predictors. One path for identical speciation/extinction predictors, two paths if they differ.', default=["", ""], nargs='+')
     p.add_argument('-SNNpath_taxon_time_tables', type=str, help='Path to directory with table(s) of taxon-time specific predictors for sampling.', default="", nargs=1)
     p.add_argument('-BDNNexport_taxon_time_tables', help='Export BDNN predictors. Creates a new directory with one text file per time bin (from most recent to earliest).', action='store_true', default=False)
+    p.add_argument('-SNNexport',   metavar='<input file>', type=str, help="Export fossil counts and features for external machine learning: provide path and base name for 'mcmc.log' file (e.g. .../pyrate_mcmc_logs/example_Grj_mcmc.log)", default = "")
     p.add_argument('-BDNNupdate_f', type=float, help='fraction of updated weights', default=[0.1], metavar=[0.1], nargs='+')
     p.add_argument('-BDNNdd', help='Diversity-dependent BDNN', action='store_true', default=False)
     p.add_argument('-BDNNpklfile', type=str, help='Load BDNN pickle file', default="", metavar="")
@@ -7439,7 +7440,11 @@ if __name__ == '__main__':
                 trait_tbl_NN[1] = trait_tbl_lm[1]
                 cov_par_init_NN[0] = cov_par_init_lm[0]
                 cov_par_init_NN[1] = cov_par_init_lm[1]
-                prior_bdnn_w_sd = [np.ones(cov_par_init_NN[0][i].shape) * args.BDNNprior for i in range(len(cov_par_init_NN[0]))]
+
+                bdnn_prior = args.BDNNprior
+                if len(bdnn_prior) < len(cov_par_init_NN[0]):
+                    bdnn_prior = [bdnn_prior[0]] * len(cov_par_init_NN[0])
+                prior_bdnn_w_sd = [np.ones(cov_par_init_NN[0][i].shape) * bdnn_prior[i] for i in range(len(cov_par_init_NN[0]))]
                 from pyrate_lib.bdnn_lib import get_idx_feature_without_variance
                 invariant_bdnn_pred = [get_idx_feature_without_variance(trait_tbl_lm[0]), get_idx_feature_without_variance(trait_tbl_lm[1])]
                 has_invariant_bdnn_pred = np.sum(np.concatenate(invariant_bdnn_pred)) > 0
@@ -7470,7 +7475,10 @@ if __name__ == '__main__':
                                                                                      loaded_tbls=snn_loaded_tbls,
                                                                                      float_prec_f=float_prec_f)
                 cov_par_init_NN[2] = cov_par_init_NN_q
-                prior_bdnn_w_q_sd = [np.ones(cov_par_init_NN[2][i].shape) * args.BDNNprior for i in range(len(cov_par_init_NN[2]))]
+                snn_prior = args.BDNNprior
+                if len(snn_prior) < len(cov_par_init_NN[2]):
+                    snn_prior = [snn_prior[0]] * len(cov_par_init_NN[2])
+                prior_snn_w_sd = [np.ones(cov_par_init_NN[2][i].shape) * snn_prior[i] for i in range(len(cov_par_init_NN[2]))]
                 if prior_lam_t_reg[-1] > 0:
                     cov_par_init_NN[5] = 0.5
             
@@ -7720,8 +7728,7 @@ if __name__ == '__main__':
         bdnn_dict = {
             'hidden_act_f': hidden_act_f,
             'prior_t_reg': prior_lam_t_reg,
-            'independent_t_reg': independ_reg,
-            'prior_cov': args.BDNNprior
+            'independent_t_reg': independ_reg
         }
         # store fad/lad
         sp_fad_lad = []
@@ -7754,6 +7761,7 @@ if __name__ == '__main__':
                 bdnn_obs_div = get_DT(time_vec, sp_fad_lad["FAD"], sp_fad_lad["LAD"])
                 bdnn_rescale_div = np.max(bdnn_obs_div)
             bdnn_dict.update({
+                'prior_cov': bdnn_prior,
                 'layers_shapes': layer_shapes_bd,
                 'layers_sizes': layer_sizes_bd,
                 'out_act_f': out_act_f,
@@ -7789,6 +7797,7 @@ if __name__ == '__main__':
             if bdnn_ads >= 0.0:
                 names_features_q += ['taxon_age']
             bdnn_dict.update({
+                'prior_cov_q': snn_prior,
                 'layers_shapes_q': layer_shapes_q,
                 'layers_sizes_q': layer_sizes_q,
                 'out_act_f_q': out_act_f_q,
@@ -7819,10 +7828,22 @@ if __name__ == '__main__':
                    sp_fad_lad=sp_fad_lad,
                    occ_data=occ_data)
 
-        bdnn_obj_out_file = "%s/%s.pkl" % (path_dir,suff_out)
-        write_pkl(obj, bdnn_obj_out_file)
-        print("\n\nBDNN object saved as:", bdnn_obj_out_file, "\n")
-    
+        if args.SNNexport == '':
+            bdnn_obj_out_file = "%s/%s.pkl" % (path_dir,suff_out)
+            write_pkl(obj, bdnn_obj_out_file)
+            print("\n\nBDNN object saved as:", bdnn_obj_out_file, "\n")
+        else:
+            import pyrate_lib.bdnn_lib as bdnn_lib
+            snn_ads = bdnn_ads > 0.0
+            if not snn_me:
+                snn_me_times = None
+            bdnn_lib.export_snn(args.SNNexport, burnin,
+                                trait_tbl_NN[2], names_features_q, taxa_names,
+                                snn_me_times, snn_ads,
+                                highres_q_repeats, q_time_frames_bdnn, TPP_model,
+                                occs_sp)
+            sys.exit()
+
         if args.BDNNexport_taxon_time_tables:
             import pyrate_lib.bdnn_lib as bdnn_lib
             if BDNNmodel in [1, 3]:
@@ -7830,6 +7851,8 @@ if __name__ == '__main__':
             if BDNNmodel in [2, 3]:
                 bdnn_lib.export_trait_tbl(trait_tbl_NN[2], names_features_q, output_wd, q_time_frames_bdnn, rate_type="S")
             sys.exit()
+
+
     
     if mcmc_gen > 0:
         # OUTPUT 0 SUMMARY AND SETTINGS

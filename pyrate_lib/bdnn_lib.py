@@ -73,7 +73,7 @@ from sklearn.linear_model import LinearRegression
 
 np.seterr(over='ignore', under='ignore')
 
-small_number= 1e-50
+small_number = 1e-50
 
 
 def load_trait_tbl(path, rate_type="diversification"):
@@ -157,6 +157,102 @@ def export_trait_tbl(trait_tbl, names_features, output_wd, time, rate_type="BD")
     print("%sNN predictors export into %s" % (rate_type, path_predictors))
 
 
+def export_snn(f, burn, trt_tbl, names_features, names_taxa, me_times, age_dependent_sampling, q_repeats, time, TPP_model, counts):
+    output_wd = os.path.dirname(os.path.realpath(f))
+    name_file = os.path.basename(f)
+
+    m = pd.read_csv(f, delimiter='\t')
+    np_m = m.to_numpy()
+    is_log_file = '.log' in f
+    if is_log_file:
+        name_file = name_file.replace("_mcmc.log", "")
+        ts_indx = [i for i in range(len(m.columns)) if '_TS' in m.columns[i]]
+        te_indx = [i for i in range(len(m.columns)) if '_TE' in m.columns[i]]
+        num_it = np_m.shape[0]
+        burnin = check_burnin(burn, num_it)
+        ts = np_m[burnin:, ts_indx]
+        te = np_m[burnin:, te_indx]
+        ts_mean = np.mean(ts, axis=0)
+        te_mean = np.mean(te, axis=0)
+    else:
+        # fixed or true tste from e.g. simulation
+        name_file = name_file.replace(".txt", "")
+        name_file = name_file.replace(".csv", "")
+        name_file = name_file.replace(".tsv", "")
+        # filter by names_taxa
+        taxa = np.array(names_taxa)
+        keep = np.isin(np_m[:, 0], taxa)
+        np_m = np_m[keep, :]
+        # order as in all PyRate objects
+        idx = np.argsort(np_m[:, 0])
+        np_m = np_m[idx[np.searchsorted(np_m[idx, 0], taxa)], :]
+        ts_mean = np_m[:, 1]
+        te_mean = np_m[:, 2]
+
+    time[0] = np.inf
+    n_taxa = trt_tbl.shape[-2]
+
+    if counts.ndim == 1:
+        trt_tbl_flat = trt_tbl
+        counts_flat = counts
+        row_names = names_taxa
+
+    else:
+        n_bins = counts.shape[1]
+
+        # make 3D trait table if there is no paleoenvironment or age-dependent sampling
+        not_timevar = trt_tbl.ndim == 2
+        if not_timevar:
+            trt_tbl = np.stack([trt_tbl] * n_bins, axis=0)
+
+        # add mass extinction victim identifier
+        if not me_times is None:
+            me_idx = -1 - int(age_dependent_sampling)
+            trt_tbl, _, _ = identify_me_victims(te_mean, me_times, trt_tbl, me_idx)
+
+        # add relative taxon age
+        if age_dependent_sampling:
+            trt_tbl = add_taxon_age(ts_mean, te_mean, time, trt_tbl)
+
+        # add q bin identifier
+        if TPP_model:
+            if not q_repeats is None:
+                add_q_repeats = np.repeat(q_repeats, n_taxa).reshape((-1, n_taxa, 1))
+            else:
+                add_q_repeats = np.repeat(np.arange(n_bins), n_taxa).reshape((-1, n_taxa, 1))
+            trt_tbl = np.dstack((trt_tbl, add_q_repeats))
+            names_features.append('q_bin')
+
+        # add time
+        if n_bins > 1:
+            add_time = np.repeat(time[1:], n_taxa).reshape((-1, n_taxa, 1))
+            trt_tbl = np.dstack((trt_tbl, add_time))
+            names_features.append('time')
+
+        # trim trait table and counts to ts and te
+        trt_tbl_list = []
+        counts_list = []
+        row_names = []
+
+        for i in range(n_taxa):
+            keep = np.logical_and(time[:-1] > te_mean[i], time[1:] < ts_mean[i])
+            trt_tbl_i = trt_tbl[:, i, :]
+            trt_tbl_list.append(trt_tbl_i[keep, :])
+            counts_list.append(counts[i, keep])
+            row_names += [names_taxa[i]] * np.sum(keep)
+
+        # flatten by instance
+        trt_tbl_flat = np.vstack(trt_tbl_list)
+        counts_flat = np.concatenate(counts_list)
+
+    # write
+    trt_tbl_df = pd.DataFrame(trt_tbl_flat, columns=names_features, index=row_names)
+    feature_file = os.path.join(output_wd, name_file + '_features.txt')
+    trt_tbl_df.to_csv(feature_file, sep='\t')
+    counts_df = pd.DataFrame(counts_flat, columns=['k'], index=row_names)
+    counts_file = os.path.join(output_wd, name_file + '_counts.txt')
+    counts_df.to_csv(counts_file, sep='\t')
+
 
 def make_pseudo_tste(tse, repeats):
     """Create array of origination or extinction time from fixed events"""
@@ -192,7 +288,6 @@ def combine_pkl(path_to_files, tag, burnin, resample):
             bdnn_dict.update({'prior_t_reg': pkl_list[0].bdnn_settings['prior_t_reg']})
         if 'independent_t_reg' in pkl_list[0].bdnn_settings.keys():
             bdnn_dict.update({'independent_t_reg': pkl_list[0].bdnn_settings['independent_t_reg']})
-        bdnn_dict.update({'prior_cov': pkl_list[0].bdnn_settings['prior_cov']})
 
         num_replicates = len(pkl_list)
         if bd:
@@ -207,6 +302,7 @@ def combine_pkl(path_to_files, tag, burnin, resample):
             pkl_most_bins = np.argmax(n_bins)
             
             bdnn_dict.update({
+                'prior_cov': pkl_list[0].bdnn_settings['prior_cov'],
                 'layers_shapes': pkl_list[0].bdnn_settings['layers_shapes'],
                 'layers_sizes': pkl_list[0].bdnn_settings['layers_sizes'],
                 'out_act_f': pkl_list[0].bdnn_settings['out_act_f'],
@@ -275,6 +371,7 @@ def combine_pkl(path_to_files, tag, burnin, resample):
             replicate = np.repeat(np.arange(num_replicates), mcmc_it)
 
             bdnn_dict.update({
+                'prior_cov_q': pkl_list[0].bdnn_settings['prior_cov_q'],
                 'layers_shapes_q': pkl_list[0].bdnn_settings['layers_shapes_q'],
                 'layers_sizes_q': pkl_list[0].bdnn_settings['layers_sizes_q'],
                 'out_act_f_q': pkl_list[0].bdnn_settings['out_act_f_q'],
@@ -1956,7 +2053,10 @@ def set_list_prec(trt_tbl, prec_f=np.float64):
         trt_tbl = prec_f(trt_tbl).reshape(trt_tbl.shape)
     else:
         for i in range(len(trt_tbl)):
-            trt_tbl[i] = prec_f(trt_tbl[i]).reshape(trt_tbl[i].shape)
+            if isinstance(trt_tbl[i], np.ndarray):
+                trt_tbl[i] = prec_f(trt_tbl[i]).reshape(trt_tbl[i].shape)
+            else:
+                trt_tbl[i] = trt_tbl[i]
     return trt_tbl
 
 
@@ -3619,9 +3719,10 @@ def get_CV_from_sim_bdnn(bdnn_obj, num_taxa, starting_taxa, sp_rates, ex_rates, 
             independ_reg = bdnn_obj.bdnn_settings['independent_t_reg']
         else:
             prior_t_reg = [prior_t_reg, prior_t_reg]
-    prior_cov = 1.0
-    if 'prior_cov' in bdnn_obj.bdnn_settings:
-        prior_cov = bdnn_obj.bdnn_settings['prior_cov']
+    prior_cov = bdnn_obj.bdnn_settings['prior_cov']
+    # Backwards compatible to version without layer-specific prior
+    if isinstance(prior_cov, (int, float, complex)):
+        prior_cov = [prior_cov] * len(layer_shapes)
 
     args = []
     for i in range(num_sim):
@@ -3910,7 +4011,7 @@ class BdnnTester():
                  bdnn_update_f=[0.1, 0.2, 0.4],
                  prior_t_reg=-1.0,
                  independ_reg=False,
-                 prior_cov=1.0,
+                 prior_cov=[1.0, 1.0, 1.0],
                  mcmc_iterations=25000,
                  burnin=5000,
                  seed=None,
@@ -3966,8 +4067,8 @@ class BdnnTester():
 
 
     def get_prior(self, w_lam, w_mu, t_reg):
-        prior = np.sum([np.sum(stats.norm.logpdf(i, loc=0, scale=self.prior_cov)) for i in w_lam])
-        prior += np.sum([np.sum(stats.norm.logpdf(i, loc=0, scale=self.prior_cov)) for i in w_mu])
+        prior = np.sum([np.sum(stats.norm.logpdf(w_lam[i], loc=0, scale=self.prior_cov[i])) for i in range(len(w_lam))])
+        prior += np.sum([np.sum(stats.norm.logpdf(w_mu[i], loc=0, scale=self.prior_cov[i])) for i in range(len(w_mu))])
         if self.prior_t_reg[0] > 0.0:
             prior += np.log(self.prior_t_reg[0]) - self.prior_t_reg[0] * t_reg[0]
         if self.prior_t_reg[1] > 0.0 and self.independ_reg:
@@ -4078,7 +4179,7 @@ class BdnnTesterSampling():
                  act_f=np.tanh,
                  bdnn_update_f=[0.1, 0.2, 0.4],
                  prior_t_reg=[-1.0],
-                 prior_cov=1.0,
+                 prior_cov=[1.0, 1.0, 1.0],
                  pert_prior=[1.5, 1.1],
                  mcmc_iterations=25000,
                  burnin=5000,
@@ -4162,7 +4263,7 @@ class BdnnTesterSampling():
 
 
     def get_prior(self, q_rates, w_q, t_reg):
-        prior = np.sum([np.sum(stats.norm.logpdf(i, loc=0, scale=self.prior_cov)) for i in w_q])
+        prior = np.sum([np.sum(stats.norm.logpdf(w_q[i], loc=0, scale=self.prior_cov[i])) for i in range(len(w_q))])
         if self.prior_t_reg > 0.0:
             prior += np.log(self.prior_t_reg) - self.prior_t_reg * t_reg
         if self.TPP_model:
@@ -4369,12 +4470,14 @@ def get_coefficient_sampling_variation(path_dir_log_files, burn, combine_discr_f
     act_f = bdnn_obj.bdnn_settings['hidden_act_f']
     out_act_f = bdnn_obj.bdnn_settings['out_act_f_q']
     pp_gamma_ncat = bdnn_obj.bdnn_settings['pp_gamma_ncat']
-    prior_t_reg = -1.0
-    if 'prior_t_reg' in bdnn_obj.bdnn_settings:
-        prior_t_reg = bdnn_obj.bdnn_settings['prior_t_reg']
-    prior_cov = 1.0
-    if 'prior_cov' in bdnn_obj.bdnn_settings:
+    prior_t_reg = bdnn_obj.bdnn_settings['prior_t_reg']
+    # Backwards compatibility before layer-specific weight priors
+    if 'prior_cov_q' in bdnn_obj.bdnn_settings:
+        pprior_cov = bdnn_obj.bdnn_settings['prior_cov_q']
+    else:
         prior_cov = bdnn_obj.bdnn_settings['prior_cov']
+    if isinstance(prior_cov, (int, float, complex)):
+        prior_cov = [prior_cov] * len(layer_shapes)
 
     args = []
     for i in range(num_sim):
